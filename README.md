@@ -27,7 +27,7 @@ python mod_generator.exe --bootstrapper Fishstrap --path C:\Users\User\AppData\L
 
 
 ### Building from source
-TO build form source, you simply clone this repository via:
+To build from source, you simply clone this repository via:
 ```
 git clone https://github.com/Froststrap/mod-generator.git
 ```
