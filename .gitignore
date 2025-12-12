@@ -1,4 +1,4 @@
 # Pyinstaller stuff
-main.spec
+mod_generator.spec
 dist/
 build/
