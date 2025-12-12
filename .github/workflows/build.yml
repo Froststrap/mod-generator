@@ -26,6 +26,7 @@ jobs:
         with:
           main: src/main
           python_version: 3.14
+          pyinstaller_version: 6.17.0
           artifact: mod_generator
 
       - name: Upload artifact
