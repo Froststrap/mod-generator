@@ -33,4 +33,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: mod_generator
-          path: mod_generator.exe
+          path: dist/mod_generator.exe
