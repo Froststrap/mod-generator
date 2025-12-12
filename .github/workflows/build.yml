@@ -1,0 +1,36 @@
+name: Build Pytohn to EXE
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build with PyInstaller
+        uses: Martin005/pyinstaller-action@v1.2.0
+        with:
+          python_ver: 3.14
+          spec: src/main.py
+          requirements: requirements.txt
+          upload_exe_with_name: mod_generator.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mod_generator
+          path: mod_generator.exe
