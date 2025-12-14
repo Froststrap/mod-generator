@@ -20,7 +20,7 @@ However, you can use this standalone from Froststrap. To run the mod generator y
 ### Example Usage
 To create a font file for the colour #FF0000 and add mod to the bootstrapper Fishstrap, an example of the command would be:
 ```
-python mod_generator.exe --bootstrapper Fishstrap --path C:\Users\User\AppData\Local\Froststrap\Versions\version-5aed1822f52c4b03\ExtraContent\LuaPackages\Packages\_Index\BuilderIcons\BuilderIcons\Font --color FF0000
+mod_generator.exe --bootstrapper Fishstrap --path C:\Users\User\AppData\Local\Froststrap\Versions\version-5aed1822f52c4b03\ExtraContent\LuaPackages\Packages\_Index\BuilderIcons\BuilderIcons\Font --color FF0000
 ```
 
 **Note:** The version GUID can and will change as time goes on, so manually check whats the current version GUID for you.
