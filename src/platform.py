@@ -39,7 +39,6 @@ def _get_font_dir(bootstrapper):
             / "data"
             / "sober"
             / "asset_overlay"
-            / "Modifications"
             / "ExtraContent"
             / "LuaPackages"
             / "Packages"
