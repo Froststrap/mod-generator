@@ -29,7 +29,7 @@ def get_default_bootstrapper_for_platform():
     return None
 
 
-def _get_font_dir(bootstrapper):
+def _get_font_dir(bootstrapper, mod_name=None):
     if is_linux() and bootstrapper == "Sober":
         return (
             Path.home()
@@ -52,10 +52,14 @@ def _get_font_dir(bootstrapper):
         local_appdata = os.environ.get("LOCALAPPDATA")
         if not local_appdata:
             return None
+
+        base_path = Path(local_appdata) / bootstrapper / "Modifications"
+        
+        if bootstrapper.lower() == "froststrap" and mod_name:
+            base_path = base_path / mod_name
+            
         return (
-            Path(local_appdata)
-            / bootstrapper
-            / "Modifications"
+            base_path
             / "ExtraContent"
             / "LuaPackages"
             / "Packages"
@@ -64,19 +68,18 @@ def _get_font_dir(bootstrapper):
             / "BuilderIcons"
             / "Font"
         )
-
     return None
 
 
-def _get_root_dir(bootstrapper):
-    font_dir = _get_font_dir(bootstrapper)
+def _get_root_dir(bootstrapper, mod_name=None):
+    font_dir = _get_font_dir(bootstrapper, mod_name=mod_name)
     if not font_dir:
         return None
     return font_dir.parent
 
 
-def copy_font_to_bootstrapper(bootstrapper, output_font_path):
-    dest_dir = _get_font_dir(bootstrapper)
+def copy_font_to_bootstrapper(bootstrapper, output_font_path, mod_name=None):
+    dest_dir = _get_font_dir(bootstrapper, mod_name=mod_name)
     if not dest_dir:
         return False
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -84,11 +87,11 @@ def copy_font_to_bootstrapper(bootstrapper, output_font_path):
     return True
 
 
-def write_buildericons_json(bootstrapper):
-    root = _get_root_dir(bootstrapper)
-    if not root:
+def write_buildericons_json(bootstrapper, mod_name=None):
+    font_dir = _get_font_dir(bootstrapper, mod_name=mod_name)
+    if not font_dir:
         return False
-    root.mkdir(parents=True, exist_ok=True)
+    root = font_dir.parent
     (root / "BuilderIcons.json").write_text(
         """{
             "name": "Builder Icons",

@@ -52,7 +52,7 @@ def canonicalize_bootstrapper(name):
     raise ValueError(f"Invalid bootstrapper '{name}'")
 
 
-def recolor_font(file_path, rgb_color, bootstrapper=None):
+def recolor_font(file_path, rgb_color, bootstrapper=None, mod_name=None):
     input_path = Path(file_path)
     output_path = (
         input_path.with_suffix(".otf")
@@ -88,7 +88,7 @@ def recolor_font(file_path, rgb_color, bootstrapper=None):
         print(f"Processed: {output_path}")
 
         if bootstrapper:
-            copy_font_to_bootstrapper(bootstrapper, output_path)
+            copy_font_to_bootstrapper(bootstrapper, output_path, mod_name=mod_name)
 
     except Exception as e:
         print(f"Error processing {file_path}: {e}")
@@ -114,7 +114,7 @@ def _derive_buildericons_dir_from_path(target_dir):
     return None
 
 
-def process_directory(target_dir, rgb_color, bootstrapper=None):
+def process_directory(target_dir, rgb_color, bootstrapper=None, mod_name=None):
     if not os.path.isdir(target_dir):
         print(f"Invalid directory: {target_dir}")
         sys.exit(1)
@@ -124,14 +124,17 @@ def process_directory(target_dir, rgb_color, bootstrapper=None):
         for file in files:
             if file.lower().endswith(SUPPORTED_EXTENSIONS):
                 recolor_font(
-                    os.path.join(root, file), rgb_color, bootstrapper=bootstrapper
+                    os.path.join(root, file), 
+                    rgb_color, 
+                    bootstrapper=bootstrapper, 
+                    mod_name=mod_name
                 )
                 count += 1
 
     print(f"Processed {count} files")
 
     if bootstrapper:
-        write_buildericons_json(bootstrapper)
+        write_buildericons_json(bootstrapper, mod_name=mod_name)
     else:
         derived = _derive_buildericons_dir_from_path(target_dir)
         if derived:
@@ -143,6 +146,7 @@ if __name__ == "__main__":
     parser.add_argument("--path", required=True)
     parser.add_argument("--color", required=True)
     parser.add_argument("--bootstrapper")
+    parser.add_argument("--mod-name")
     args = parser.parse_args()
 
     try:
@@ -155,4 +159,9 @@ if __name__ == "__main__":
     if args.bootstrapper:
         bootstrapper = canonicalize_bootstrapper(args.bootstrapper)
 
-    process_directory(args.path, color, bootstrapper)
+    process_directory(
+        args.path, 
+        color, 
+        bootstrapper=bootstrapper, 
+        mod_name=args.mod_name
+    )
