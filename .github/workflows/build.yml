@@ -1,13 +1,28 @@
-name: Build Python to EXE
+name: Build mod-generator
 
 on:
   push:
     branches: ["main"]
   pull_request:
+  release:
+    types: [published]
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            output-name: mod-generator.exe
+            pyinstaller-args: --onefile src/main.py --name mod-generator
+          - os: ubuntu-latest
+            output-name: mod-generator-linux
+            pyinstaller-args: --onefile src/main.py --name mod-generator-linux
+          - os: macos-latest
+            output-name: mod-generator-macos
+            pyinstaller-args: --onefile src/main.py --name mod-generator-macos
+
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout repository
@@ -16,21 +31,23 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: "3.12"
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
       - name: Build with PyInstaller
-        uses: eric2788/pyinstaller-build@master
-        with:
-          main: src/main
-          python_version: 3.14
-          pyinstaller_version: 6.17.0
-          artifact: mod_generator
+        run: pyinstaller ${{ matrix.pyinstaller-args }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mod_generator
-          path: dist/mod_generator.exe
+          name: ${{ matrix.output-name }}
+          path: dist/${{ matrix.output-name }}
+
+      # Only upload to release when triggered by a GitHub release publish
+      - name: Upload to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ matrix.output-name }}
