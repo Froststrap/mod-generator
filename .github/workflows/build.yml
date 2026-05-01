@@ -3,9 +3,8 @@ name: Build mod-generator
 on:
   push:
     branches: ["main"]
+    tags: ["v*"]
   pull_request:
-  release:
-    types: [published]
 
 jobs:
   build:
@@ -45,9 +44,39 @@ jobs:
           name: ${{ matrix.output-name }}
           path: dist/${{ matrix.output-name }}
 
-      # Only upload to release when triggered by a GitHub release publish
-      - name: Upload to release
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/${{ matrix.output-name }}
+  release:
+      needs: [build]
+      runs-on: ubuntu-latest
+      if: startsWith(github.ref, 'refs/tags/v')
+      permissions:
+        contents: write
+      steps:
+        - name: Download Windows artifact
+          uses: actions/download-artifact@v4
+          with:
+            name: mod-generator.exe
+            path: release
+  
+        - name: Download Linux artifact
+          uses: actions/download-artifact@v4
+          with:
+            name: mod-generator-linux
+            path: release
+  
+        - name: Download macOS artifact
+          uses: actions/download-artifact@v4
+          with:
+            name: mod-generator-macos
+            path: release
+  
+        - name: Create release
+          uses: softprops/action-gh-release@v2
+          with:
+            prerelease: ${{ contains(github.ref_name, '-') }}
+            draft: true
+            files: |
+              release/mod-generator.exe
+              release/mod-generator-linux
+              release/mod-generator-macos
+            name: Mod Generator ${{ github.ref_name }}
+            fail_on_unmatched_files: true
