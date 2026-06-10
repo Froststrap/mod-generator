@@ -7,9 +7,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 import argparse
+import math
 import os
 import sys
+import re
 from pathlib import Path
+
 from platform import (
     copy_font_to_bootstrapper,
     get_default_bootstrapper_for_platform,
@@ -17,8 +20,10 @@ from platform import (
 )
 
 from fontTools.ttLib import TTFont
-from fontTools.ttLib.tables.C_O_L_R_ import LayerRecord, table_C_O_L_R_
-from fontTools.ttLib.tables.C_P_A_L_ import Color, table_C_P_A_L_
+from fontTools.colorLib.builder import buildCOLR, buildCPAL
+from fontTools.pens.recordingPen import RecordingPen
+from fontTools.pens.ttGlyphPen import TTGlyphPen
+import pyclipper
 
 BOOTSTRAPPERS = [
     "Bloxstrap",
@@ -29,7 +34,10 @@ BOOTSTRAPPERS = [
     "Sober",
 ]
 
-SUPPORTED_EXTENSIONS = (".ttf", ".otf")
+SUPPORTED_EXTENSIONS = (".ttf",)
+
+SUB_GLYPH_CACHE = {}
+BEZIER_STEPS = 12
 
 
 def hex_to_rgb(hex_str):
@@ -52,13 +60,197 @@ def canonicalize_bootstrapper(name):
     raise ValueError(f"Invalid bootstrapper '{name}'")
 
 
-def recolor_font(file_path, rgb_color, bootstrapper=None, mod_name=None):
+def _quad_sample(p0, p1, p2):
+    out = []
+    for i in range(1, BEZIER_STEPS + 1):
+        t = i / BEZIER_STEPS
+        mt = 1.0 - t
+        out.append((
+            mt * mt * p0[0] + 2 * mt * t * p1[0] + t * t * p2[0],
+            mt * mt * p0[1] + 2 * mt * t * p1[1] + t * t * p2[1]
+        ))
+    return out
+
+
+def _cubic_sample(p0, p1, p2, p3):
+    out = []
+    for i in range(1, BEZIER_STEPS + 1):
+        t = i / BEZIER_STEPS
+        mt = 1.0 - t
+        out.append((
+            mt**3 * p0[0] + 3 * mt**2 * t * p1[0] + 3 * mt * t**2 * p2[0] + t**3 * p3[0],
+            mt**3 * p0[1] + 3 * mt**2 * t * p1[1] + 3 * mt * t**2 * p2[1] + t**3 * p3[1]
+        ))
+    return out
+
+
+def _append_qcurve(result, start, pts):
+    off_curves, end = pts[:-1], pts[-1]
+    if not off_curves:
+        result.append(end)
+        return
+    if len(off_curves) == 1:
+        result.extend(_quad_sample(start, off_curves[0], end))
+        return
+    cur = start
+    for i, off in enumerate(off_curves):
+        nxt = ((off[0] + off_curves[i + 1][0]) / 2, (off[1] + off_curves[i + 1][1]) / 2) if i < len(off_curves) - 1 else end
+        result.extend(_quad_sample(cur, off, nxt))
+        cur = nxt
+
+
+def _recording_to_polygons(recording):
+    contours, current = [], []
+
+    def _commit_contour():
+        if len(current) >= 3:
+            if current[0] != current[-1]:
+                current.append(current[0])
+            contours.append(list(current))
+
+    for op, args in recording:
+        if op == "moveTo":
+            _commit_contour()
+            current = [args[0]]
+        elif op == "lineTo":
+            current.append(args[0]) if current else current.extend([args[0]])
+        elif op == "qCurveTo" and current:
+            _append_qcurve(current, current[-1], list(args))
+        elif op == "curveTo" and current:
+            current.extend(_cubic_sample(current[-1], args[0], args[1], args[2]))
+        elif op in ("closePath", "endPath"):
+            _commit_contour()
+            current = []
+    _commit_contour()
+    return contours
+
+
+def _get_outline_contours(font, glyph_name):
+    if glyph_name not in font.getGlyphSet():
+        return []
+    rec = RecordingPen()
+    try:
+        font.getGlyphSet()[glyph_name].draw(rec)
+    except Exception:
+        return []
+    return _recording_to_polygons(rec.value)
+
+
+def _clip_contours_to_band(contours, lo, hi, min_coord, max_coord, axis='y'):
+    """
+    Clip contours to a band between lo and hi along the given axis ('x' or 'y').
+    Returns polygons (still in original coordinate space).
+    """
+    if not contours:
+        return []
+    pc = pyclipper.Pyclipper()
+    SCALE = 1000.0
+    for poly in contours:
+        if len(poly) < 3:
+            continue
+        vals = [pt[0] if axis == 'x' else pt[1] for pt in poly]
+        if max(vals) < lo or min(vals) > hi:
+            continue
+        cleaned = pyclipper.CleanPolygon([(int(x * SCALE), int(y * SCALE)) for x, y in poly])
+        if len(cleaned) >= 3:
+            try:
+                pc.AddPath(cleaned, pyclipper.PT_SUBJECT, True)
+            except pyclipper.ClipperException:
+                continue
+    safe_min = int((min_coord - 1000) * SCALE)
+    safe_max = int((max_coord + 1000) * SCALE)
+    if axis == 'y':
+        rect = [(safe_min, int(lo * SCALE)), (safe_max, int(lo * SCALE)),
+                (safe_max, int(hi * SCALE)), (safe_min, int(hi * SCALE))]
+    else:  # axis == 'x'
+        rect = [(int(lo * SCALE), safe_min), (int(hi * SCALE), safe_min),
+                (int(hi * SCALE), safe_max), (int(lo * SCALE), safe_max)]
+    try:
+        pc.AddPath(rect, pyclipper.PT_CLIP, True)
+        return [[(pt[0] / SCALE, pt[1] / SCALE) for pt in poly]
+                for poly in pc.Execute(pyclipper.CT_INTERSECTION, pyclipper.PFT_EVENODD, pyclipper.PFT_EVENODD)
+                if len(poly) >= 3]
+    except pyclipper.ClipperException:
+        return []
+
+
+def _write_sub_glyph(icon_name, band_idx, contours, font, glyf_table, orig_aw):
+    int_contours = []
+    for poly in contours:
+        rounded = [(round(px), round(py)) for px, py in poly]
+        dedup = []
+        for pt in rounded:
+            if not dedup or pt != dedup[-1]:
+                dedup.append(pt)
+        if len(dedup) > 1 and dedup[0] == dedup[-1]:
+            dedup.pop()
+        if len(dedup) < 3:
+            continue
+        simplified = [dedup[0]]
+        for i in range(1, len(dedup) - 1):
+            p1, p2, p3 = simplified[-1], dedup[i], dedup[i+1]
+            cross = (p2[0] - p1[0]) * (p3[1] - p1[1]) - (p2[1] - p1[1]) * (p3[0] - p1[0])
+            if abs(cross) > 25.0:
+                simplified.append(p2)
+        simplified.append(dedup[-1])
+        if len(simplified) < 3:
+            continue
+        xs = [p[0] for p in simplified]
+        ys = [p[1] for p in simplified]
+        area = sum(simplified[i][0] * simplified[(i+1) % len(simplified)][1] -
+                   simplified[(i+1) % len(simplified)][0] * simplified[i][1] for i in range(len(simplified)))
+        if max(xs) - min(xs) < 3 or max(ys) - min(ys) < 3 or abs(area) < 40.0:
+            continue
+        int_contours.append(simplified)
+
+    if not int_contours:
+        return None
+
+    fast_tuple = tuple(tuple(pt for pt in poly) for poly in int_contours)
+    contour_hash = hash(fast_tuple)
+    cache_key = f"{orig_aw}_{contour_hash}"
+    if cache_key in SUB_GLYPH_CACHE:
+        return SUB_GLYPH_CACHE[cache_key]
+
+    pen = TTGlyphPen(None)
+    for poly in int_contours:
+        pen.moveTo(poly[0])
+        for pt in poly[1:]:
+            pen.lineTo(pt)
+        pen.closePath()
+    sub_name = f"{icon_name}.g{band_idx}"
+    sub_glyph = pen.glyph()
+    sub_glyph.recalcBounds(glyf_table)
+    glyf_table[sub_name] = sub_glyph
+    font["hmtx"].metrics[sub_name] = (orig_aw, int(getattr(sub_glyph, "xMin", 0)))
+
+    SUB_GLYPH_CACHE[cache_key] = sub_name
+    return sub_name
+
+
+def interpolate_gradient(hex_stops, t):
+    t = max(0.0, min(1.0, t))
+    if len(hex_stops) == 1:
+        r, g, b = hex_to_rgb(hex_stops[0])
+        return r / 255.0, g / 255.0, b / 255.0, 1.0
+    n = len(hex_stops) - 1
+    scaled = t * n
+    idx = min(int(scaled), n - 1)
+    lt = scaled - idx
+    c1 = hex_to_rgb(hex_stops[idx])
+    c2 = hex_to_rgb(hex_stops[idx + 1])
+    r = (c1[0] + (c2[0] - c1[0]) * lt) / 255.0
+    g = (c1[1] + (c2[1] - c1[1]) * lt) / 255.0
+    b = (c1[2] + (c2[2] - c1[2]) * lt) / 255.0
+    return r, g, b, 1.0
+
+
+def recolor_font(file_path, colors, angle=0, bands=None, bootstrapper=None, mod_name=None):
+    global SUB_GLYPH_CACHE
+    SUB_GLYPH_CACHE.clear()
+
     input_path = Path(file_path)
-    output_path = (
-        input_path.with_suffix(".otf")
-        if input_path.suffix.lower() != ".otf"
-        else input_path
-    )
+    output_path = input_path.with_suffix(".otf")
 
     try:
         font = TTFont(input_path)
@@ -66,26 +258,93 @@ def recolor_font(file_path, rgb_color, bootstrapper=None, mod_name=None):
         if "COLR" in font:
             del font["COLR"]
 
-        r, g, b = rgb_color
-        cpal = table_C_P_A_L_()
-        cpal.version = 0
-        cpal.palettes = [[Color(b, g, r, 255)]]
-        cpal.numPaletteEntries = 1
-        font["CPAL"] = cpal
+        if bands is None:
+            n_bands = max(2, len(colors) * 8)
+        else:
+            n_bands = max(2, bands)
 
-        colr = table_C_O_L_R_()
-        colr.version = 0
-        colr.ColorLayers = {}
-        for glyph in font.getGlyphOrder():
-            if glyph != ".notdef":
-                layer = LayerRecord()
-                layer.name = glyph
-                layer.colorID = 0
-                colr.ColorLayers[glyph] = [layer]
-        font["COLR"] = colr
+        angle = angle % 360
+        if abs(angle - 90) < 45 or abs(angle - 270) < 45:
+            axis = 'x'
+            print(f"Using horizontal gradient (angle ~ {angle}°)")
+        else:
+            axis = 'y'
+            print(f"Using vertical gradient (angle ~ {angle}°)")
+
+        master_palette = []
+        for i in range(n_bands):
+            t = i / (n_bands - 1) if n_bands > 1 else 0.5
+            r, g, b, a = interpolate_gradient(colors, t)
+            master_palette.append((r, g, b, a))
+        font["CPAL"] = buildCPAL([master_palette])
+
+        glyf = font["glyf"]
+        original_order = list(font.getGlyphOrder())
+        extra_names = []
+        color_glyphs = {}
+
+        glyphs_to_process = [g for g in original_order if g not in (".notdef", ".null", "space")]
+        total = len(glyphs_to_process)
+        processed = 0
+
+        print(f"Processing {total} glyphs with {n_bands} bands each...")
+
+        for glyph_name in glyphs_to_process:
+            processed += 1
+            if processed % 50 == 0 or processed == total:
+                print(f"  Glyph {processed}/{total} ({glyph_name})", flush=True)
+
+            polys = _get_outline_contours(font, glyph_name)
+            if not polys:
+                continue
+
+            if axis == 'y':
+                all_coords = [pt[1] for poly in polys for pt in poly]
+                min_coord, max_coord = min(all_coords), max(all_coords)
+                if max_coord - min_coord < 1:
+                    continue
+                all_x = [pt[0] for poly in polys for pt in poly]
+                x_min, x_max = min(all_x), max(all_x)
+            else:  # axis == 'x'
+                all_coords = [pt[0] for poly in polys for pt in poly]
+                min_coord, max_coord = min(all_coords), max(all_coords)
+                if max_coord - min_coord < 1:
+                    continue
+                all_y = [pt[1] for poly in polys for pt in poly]
+                x_min, x_max = min(all_y), max(all_y)
+                y_min, y_max = min(all_y), max(all_y)
+
+            orig_aw = font["hmtx"].metrics[glyph_name][0]
+            band_step = (max_coord - min_coord) / n_bands
+            layers = []
+
+            for band in range(n_bands):
+                lo = min_coord + band * band_step
+                hi = min_coord + (band + 1) * band_step
+                if band < n_bands - 1:
+                    hi += 50.0
+                if axis == 'y':
+                    clipped = _clip_contours_to_band(polys, lo, hi, x_min, x_max, axis='y')
+                else:
+                    clipped = _clip_contours_to_band(polys, lo, hi, y_min, y_max, axis='x')
+                if not clipped:
+                    continue
+                sub_name = _write_sub_glyph(glyph_name, band, clipped, font, glyf, orig_aw)
+                if sub_name:
+                    layers.append((sub_name, band))
+                    if sub_name not in extra_names:
+                        extra_names.append(sub_name)
+
+            if layers:
+                color_glyphs[glyph_name] = layers
+
+        if extra_names:
+            font.setGlyphOrder(original_order + extra_names)
+        if color_glyphs:
+            font["COLR"] = buildCOLR(color_glyphs)
 
         font.save(output_path)
-        print(f"Processed: {output_path}")
+        print(f"Processed (gradient, {len(colors)} stops, angle≈{angle}°, bands={n_bands}): {output_path}")
 
         if bootstrapper:
             copy_font_to_bootstrapper(bootstrapper, output_path, mod_name=mod_name)
@@ -97,24 +356,18 @@ def recolor_font(file_path, rgb_color, bootstrapper=None, mod_name=None):
 def _derive_buildericons_dir_from_path(target_dir):
     p = Path(target_dir)
     markers = [
-        "ExtraContent",
-        "LuaPackages",
-        "Packages",
-        "_Index",
-        "BuilderIcons",
-        "BuilderIcons",
+        "ExtraContent", "LuaPackages", "Packages",
+        "_Index", "BuilderIcons", "BuilderIcons"
     ]
     for anc in [p] + list(p.parents):
         parts = list(anc.parts)
         if len(parts) >= len(markers):
-            if [x.lower() for x in parts[-len(markers) :]] == [
-                x.lower() for x in markers
-            ]:
+            if [x.lower() for x in parts[-len(markers):]] == [x.lower() for x in markers]:
                 return str(anc)
     return None
 
 
-def process_directory(target_dir, rgb_color, bootstrapper=None, mod_name=None):
+def process_directory(target_dir, colors, angle=0, bands=None, bootstrapper=None, mod_name=None):
     if not os.path.isdir(target_dir):
         print(f"Invalid directory: {target_dir}")
         sys.exit(1)
@@ -122,14 +375,19 @@ def process_directory(target_dir, rgb_color, bootstrapper=None, mod_name=None):
     count = 0
     for root, _, files in os.walk(target_dir):
         for file in files:
-            if file.lower().endswith(SUPPORTED_EXTENSIONS):
-                recolor_font(
-                    os.path.join(root, file), 
-                    rgb_color, 
-                    bootstrapper=bootstrapper, 
-                    mod_name=mod_name
-                )
-                count += 1
+            if not file.lower().endswith(SUPPORTED_EXTENSIONS):
+                continue
+            if file.lower().endswith(".otf"):
+                continue
+            recolor_font(
+                os.path.join(root, file),
+                colors,
+                angle=angle,
+                bands=bands,
+                bootstrapper=bootstrapper,
+                mod_name=mod_name,
+            )
+            count += 1
 
     print(f"Processed {count} files")
 
@@ -144,24 +402,37 @@ def process_directory(target_dir, rgb_color, bootstrapper=None, mod_name=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--path", required=True)
-    parser.add_argument("--color", required=True)
+    parser.add_argument("--color", required=True,
+                        help="Single hex (#RRGGBB) or comma‑separated list for gradient")
+    parser.add_argument("--angle", type=int, default=0,
+                        help="Approximate direction: 0=vertical, 90=horizontal (others map to closest)")
+    parser.add_argument("--bands", type=int, default=None,
+                        help="Number of colour bands (default = stops × 8)")
     parser.add_argument("--bootstrapper")
     parser.add_argument("--mod-name")
     args = parser.parse_args()
 
-    try:
-        color = hex_to_rgb(args.color)
-    except ValueError as e:
-        print(e)
-        sys.exit(1)
+    color_input = args.color.strip()
+    if "," in color_input:
+        colors_list = [c.strip() for c in color_input.split(",")]
+        try:
+            for c in colors_list:
+                hex_to_rgb(c)
+        except ValueError as e:
+            print(f"Invalid color: {e}")
+            sys.exit(1)
+        colors = colors_list
+    else:
+        try:
+            hex_to_rgb(color_input)
+        except ValueError as e:
+            print(f"Invalid color: {e}")
+            sys.exit(1)
+        colors = color_input
 
     bootstrapper = get_default_bootstrapper_for_platform()
     if args.bootstrapper:
         bootstrapper = canonicalize_bootstrapper(args.bootstrapper)
 
-    process_directory(
-        args.path, 
-        color, 
-        bootstrapper=bootstrapper, 
-        mod_name=args.mod_name
-    )
+    process_directory(args.path, colors, angle=args.angle, bands=args.bands,
+                      bootstrapper=bootstrapper, mod_name=args.mod_name)
