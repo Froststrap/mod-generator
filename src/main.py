@@ -24,6 +24,8 @@ from fontTools.colorLib.builder import buildCOLR, buildCPAL
 from fontTools.pens.recordingPen import RecordingPen
 from fontTools.pens.ttGlyphPen import TTGlyphPen
 import pyclipper
+from PIL import Image
+import numpy as np
 
 BOOTSTRAPPERS = [
     "Bloxstrap",
@@ -137,10 +139,6 @@ def _get_outline_contours(font, glyph_name):
 
 
 def _clip_contours_to_band(contours, lo, hi, min_coord, max_coord, axis='y'):
-    """
-    Clip contours to a band between lo and hi along the given axis ('x' or 'y').
-    Returns polygons (still in original coordinate space).
-    """
     if not contours:
         return []
     pc = pyclipper.Pyclipper()
@@ -162,7 +160,7 @@ def _clip_contours_to_band(contours, lo, hi, min_coord, max_coord, axis='y'):
     if axis == 'y':
         rect = [(safe_min, int(lo * SCALE)), (safe_max, int(lo * SCALE)),
                 (safe_max, int(hi * SCALE)), (safe_min, int(hi * SCALE))]
-    else:  # axis == 'x'
+    else:
         rect = [(int(lo * SCALE), safe_min), (int(hi * SCALE), safe_min),
                 (int(hi * SCALE), safe_max), (int(lo * SCALE), safe_max)]
     try:
@@ -245,7 +243,70 @@ def interpolate_gradient(hex_stops, t):
     return r, g, b, 1.0
 
 
-def recolor_font(file_path, colors, angle=0, bands=None, bootstrapper=None, mod_name=None):
+def _get_native_color_contours(image_path, units, glyph_name, glyf_table, max_colors=8):
+    try:
+        with Image.open(image_path) as img:
+            img = img.convert("RGBA")
+            img.thumbnail((128, 128), resample=Image.Resampling.LANCZOS)
+            alpha = img.getchannel('A')
+            rgb = img.convert('RGB').quantize(colors=max_colors, method=Image.Quantize.MAXCOVERAGE)
+            img = rgb.convert('RGBA')
+            img.putalpha(alpha)
+    except Exception:
+        return {}
+    arr = np.array(img)
+    h, w = arr.shape[:2]
+    og = glyf_table.get(glyph_name)
+    if og and hasattr(og, "xMin"):
+        x_min = float(og.xMin)
+        y_max = float(og.yMax)
+        bbox_w = float(og.xMax - og.xMin)
+        bbox_h = float(og.yMax - og.yMin)
+    else:
+        x_min = 0.0
+        y_max = float(units)
+        bbox_w = float(units)
+        bbox_h = float(units)
+    scale = min(max(1.0, bbox_w) / max(1, w), max(1.0, bbox_h) / max(1, h))
+    top_x = x_min + (bbox_w - (w * scale)) / 2.0
+    top_y = y_max - (bbox_h - (h * scale)) / 2.0
+    color_rects = {}
+    for py in range(h):
+        px = 0
+        while px < w:
+            r, g, b, a = arr[py, px]
+            if a >= 80:
+                start_x = px
+                hex_col = f"#{r:02x}{g:02x}{b:02x}"
+                while px < w and arr[py, px][3] >= 80 and f"#{arr[py, px][0]:02x}{arr[py, px][1]:02x}{arr[py, px][2]:02x}" == hex_col:
+                    px += 1
+                if hex_col not in color_rects:
+                    color_rects[hex_col] = []
+                fy_bot = top_y - (py + 1) * scale
+                fy_top = top_y - py * scale
+                x0 = top_x + start_x * scale
+                x1 = top_x + px * scale
+                color_rects[hex_col].append([(x0, fy_bot - 0.5), (x1 + 0.5, fy_bot - 0.5), (x1 + 0.5, fy_top + 0.5), (x0, fy_top + 0.5)])
+            else:
+                px += 1
+    final_color_contours = {}
+    SCALE = 1000.0
+    for hex_col, rects in color_rects.items():
+        pc = pyclipper.Pyclipper()
+        for poly in rects:
+            pc.AddPath([(int(x * SCALE), int(y * SCALE)) for x, y in poly], pyclipper.PT_SUBJECT, True)
+        try:
+            result = [[(pt[0] / SCALE, pt[1] / SCALE) for pt in p]
+                      for p in pc.Execute(pyclipper.CT_UNION, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO)
+                      if len(p) >= 3]
+            if result:
+                final_color_contours[hex_col] = result
+        except:
+            pass
+    return final_color_contours
+
+
+def recolor_font(file_path, colors, angle=0, bands=None, bootstrapper=None, mod_name=None, image_map=None):
     global SUB_GLYPH_CACHE
     SUB_GLYPH_CACHE.clear()
 
@@ -287,12 +348,43 @@ def recolor_font(file_path, colors, angle=0, bands=None, bootstrapper=None, mod_
         total = len(glyphs_to_process)
         processed = 0
 
+        solid_palette_cache = {}
+        def get_solid_color_idx(hex_col):
+            if hex_col not in solid_palette_cache:
+                r, g, b = hex_to_rgb(hex_col)
+                idx = len(master_palette)
+                master_palette.append((r / 255.0, g / 255.0, b / 255.0, 1.0))
+                solid_palette_cache[hex_col] = idx
+                font["CPAL"] = buildCPAL([master_palette])
+            return solid_palette_cache[hex_col]
+
         print(f"Processing {total} glyphs with {n_bands} bands each...")
 
         for glyph_name in glyphs_to_process:
             processed += 1
             if processed % 50 == 0 or processed == total:
                 print(f"  Glyph {processed}/{total} ({glyph_name})", flush=True)
+
+            img_path = None
+            if image_map and glyph_name in image_map:
+                img_path = image_map[glyph_name]
+
+            if img_path and Path(img_path).is_file():
+                units_per_em = font["head"].unitsPerEm
+                native_dict = _get_native_color_contours(img_path, units_per_em, glyph_name, glyf)
+                if native_dict:
+                    orig_aw = font["hmtx"].metrics[glyph_name][0]
+                    layers = []
+                    for hex_col, contours in native_dict.items():
+                        color_idx = get_solid_color_idx(hex_col)
+                        sub_name = _write_sub_glyph(glyph_name, hex_col, contours, font, glyf, orig_aw)
+                        if sub_name:
+                            layers.append((sub_name, color_idx))
+                            if sub_name not in extra_names:
+                                extra_names.append(sub_name)
+                    if layers:
+                        color_glyphs[glyph_name] = layers
+                    continue
 
             polys = _get_outline_contours(font, glyph_name)
             if not polys:
@@ -305,7 +397,7 @@ def recolor_font(file_path, colors, angle=0, bands=None, bootstrapper=None, mod_
                     continue
                 all_x = [pt[0] for poly in polys for pt in poly]
                 x_min, x_max = min(all_x), max(all_x)
-            else:  # axis == 'x'
+            else:
                 all_coords = [pt[0] for poly in polys for pt in poly]
                 min_coord, max_coord = min(all_coords), max(all_coords)
                 if max_coord - min_coord < 1:
@@ -367,7 +459,7 @@ def _derive_buildericons_dir_from_path(target_dir):
     return None
 
 
-def process_directory(target_dir, colors, angle=0, bands=None, bootstrapper=None, mod_name=None):
+def process_directory(target_dir, colors, angle=0, bands=None, bootstrapper=None, mod_name=None, image_map=None):
     if not os.path.isdir(target_dir):
         print(f"Invalid directory: {target_dir}")
         sys.exit(1)
@@ -386,6 +478,7 @@ def process_directory(target_dir, colors, angle=0, bands=None, bootstrapper=None
                 bands=bands,
                 bootstrapper=bootstrapper,
                 mod_name=mod_name,
+                image_map=image_map,
             )
             count += 1
 
@@ -410,6 +503,8 @@ if __name__ == "__main__":
                         help="Number of colour bands (default = stops × 8)")
     parser.add_argument("--bootstrapper")
     parser.add_argument("--mod-name")
+    parser.add_argument("--image-map", default=None,
+                        help="Comma‑separated glyph:image_path pairs, e.g. 'uniF200:C:/img.png,another:img2.png'")
     args = parser.parse_args()
 
     color_input = args.color.strip()
@@ -434,5 +529,17 @@ if __name__ == "__main__":
     if args.bootstrapper:
         bootstrapper = canonicalize_bootstrapper(args.bootstrapper)
 
+    image_map = None
+    if args.image_map:
+        image_map = {}
+        for pair in args.image_map.split(','):
+            if ':' not in pair:
+                print(f"Warning: ignoring invalid image-map entry '{pair}' (missing colon)")
+                continue
+            glyph, path = pair.split(':', 1)
+            image_map[glyph.strip()] = path.strip()
+        if image_map:
+            print(f"Loaded image map for glyphs: {', '.join(image_map.keys())}")
+
     process_directory(args.path, colors, angle=args.angle, bands=args.bands,
-                      bootstrapper=bootstrapper, mod_name=args.mod_name)
+                      bootstrapper=bootstrapper, mod_name=args.mod_name, image_map=image_map)
