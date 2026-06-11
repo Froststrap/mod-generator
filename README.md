@@ -1,11 +1,19 @@
 The mod generator repository for [Froststrap](https://github.com/RealMeddsam/Froststrap)
 
+>[!NOTE]
+> Now with gradient support! (as of mod generator 2.0)
+
+
 ### Requirements
  - Python 3.10+
  - [uv](https://docs.astral.sh/uv/)
  
 ### Project Dependencies
  - fonttools
+ - numpy
+ - pyclipper
+ - pyinstaller
+ - pillow
  
 ### Usage
 you can use this to create font files for a desired colour, note it does not support image generation for the few images that Roblox still annoyingly uses.
@@ -14,7 +22,9 @@ To get the most seamless experience, it is recommended to use [Froststrap](https
 
 However, you can use this standalone from Froststrap. To run the mod generator you simply download the [release](https://github.com/Froststrap/mod-generator/releases/latest), and run the exe file in the terminal, with the following launch arguments:
  - `path`: path to the font file, normally located in `%localappdata%\Froststrap\Versions\version-version guid\ExtraContent\LuaPackages\Packages\_Index\BuilderIcons\BuilderIcons\Font\`.
- - `color`: colour to use for the font, in hex code format.
+ - `colors`: colors to use for the font, in hex code format. With gradient support, you list all the hex codes in order from ascending to descending order to be displayed on the glyph.
+ - `angle`: angle to rotate the gradient, in degrees.
+ - `bands`: number of bands to use for the gradient, higher amount of bands means higher quality but longer time to generate.
  - `bootstrapper`: [OPTIONAL] name of the bootstrapper to use, accepted bootstrappers are `Bloxstrap`, `Fishstrap`, `Froststrap`, `Luczystrap`, or `Lunastrap`. This is used to automatically put the mod into the desired bootstrapper.
 
 ### Example Usage
@@ -34,12 +44,12 @@ git clone https://github.com/Froststrap/mod-generator.git
 
 then install dependencies via:
 ```
-uv pip install -r requirements.txt
+uv sync
 ```
 
 you can then run the file:
 ```
-python src/main.py [ARGUMENTS]
+uv run src/main.py [ARGUMENTS]
 ```
 
 To build the project into an executable, run:

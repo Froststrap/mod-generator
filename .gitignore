@@ -2,3 +2,6 @@
 mod_generator.spec
 dist/
 build/
+
+# import cache
+__pycache__/

@@ -1,0 +1,15 @@
+[project]
+name = "mod-generator"
+version = "2.0.0"
+description = "roblox mod generator"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "AGPL-3.0-or-later" }
+
+dependencies = [
+    "fonttools>=4.63.0",
+    "numpy>=2.2.6",
+    "pillow>=12.2.0",
+    "pyclipper>=1.4.0",
+    "pyinstaller==6.17.0",
+]
