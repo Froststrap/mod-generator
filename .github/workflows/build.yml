@@ -32,11 +32,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: setup uv
+        uses: astral-sh/setup-uv@8.2.0
+
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: uv sync
 
       - name: Build with PyInstaller
-        run: pyinstaller ${{ matrix.pyinstaller-args }}
+        run: uv run pyinstaller ${{ matrix.pyinstaller-args }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -45,38 +48,38 @@ jobs:
           path: dist/${{ matrix.output-name }}
 
   release:
-      needs: [build]
-      runs-on: ubuntu-latest
-      if: startsWith(github.ref, 'refs/tags/v')
-      permissions:
-        contents: write
-      steps:
-        - name: Download Windows artifact
-          uses: actions/download-artifact@v4
-          with:
-            name: mod-generator.exe
-            path: release
-  
-        - name: Download Linux artifact
-          uses: actions/download-artifact@v4
-          with:
-            name: mod-generator-linux
-            path: release
-  
-        - name: Download macOS artifact
-          uses: actions/download-artifact@v4
-          with:
-            name: mod-generator-macos
-            path: release
-  
-        - name: Create release
-          uses: softprops/action-gh-release@v2
-          with:
-            prerelease: ${{ contains(github.ref_name, '-') }}
-            draft: true
-            files: |
-              release/mod-generator.exe
-              release/mod-generator-linux
-              release/mod-generator-macos
-            name: Mod Generator ${{ github.ref_name }}
-            fail_on_unmatched_files: true
+    needs: [build]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mod-generator.exe
+          path: release
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mod-generator-linux
+          path: release
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mod-generator-macos
+          path: release
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          draft: true
+          files: |
+            release/mod-generator.exe
+            release/mod-generator-linux
+            release/mod-generator-macos
+          name: Mod Generator ${{ github.ref_name }}
+          fail_on_unmatched_files: true
