@@ -273,21 +273,72 @@ def _write_sub_glyph(icon_name, band_idx, contours, font, glyf_table, orig_aw):
     return sub_name
 
 
-def interpolate_gradient(hex_stops, t):
+def interpolate_gradient(stops, t):
+    """
+    stops: list of (offset, (r,g,b)) tuples, offsets in [0,1], sorted.
+    t: position in [0,1]
+    returns (r,g,b,a)
+    """
     t = max(0.0, min(1.0, t))
-    if len(hex_stops) == 1:
-        r, g, b = hex_to_rgb(hex_stops[0])
+    if len(stops) == 1:
+        r, g, b = stops[0][1]
         return r / 255.0, g / 255.0, b / 255.0, 1.0
-    n = len(hex_stops) - 1
-    scaled = t * n
-    idx = min(int(scaled), n - 1)
-    lt = scaled - idx
-    c1 = hex_to_rgb(hex_stops[idx])
-    c2 = hex_to_rgb(hex_stops[idx + 1])
-    r = (c1[0] + (c2[0] - c1[0]) * lt) / 255.0
-    g = (c1[1] + (c2[1] - c1[1]) * lt) / 255.0
-    b = (c1[2] + (c2[2] - c1[2]) * lt) / 255.0
-    return r, g, b, 1.0
+
+    for i in range(len(stops) - 1):
+        off1, col1 = stops[i]
+        off2, col2 = stops[i + 1]
+        if off1 <= t <= off2:
+            if off2 == off1:
+                r, g, b = col1
+            else:
+                ratio = (t - off1) / (off2 - off1)
+                r = col1[0] + (col2[0] - col1[0]) * ratio
+                g = col1[1] + (col2[1] - col1[1]) * ratio
+                b = col1[2] + (col2[2] - col1[2]) * ratio
+            return r / 255.0, g / 255.0, b / 255.0, 1.0
+
+    r, g, b = stops[-1][1]
+    return r / 255.0, g / 255.0, b / 255.0, 1.0
+
+
+def parse_color_stops(color_arg):
+    """
+    Parse the --color argument.
+    Returns a list of (offset, (r,g,b)) sorted by offset.
+    Supports two formats:
+      1) "#RRGGBB,#RRGGBB,..." -> equally spaced offsets 0..1
+      2) "offset:#RRGGBB,offset:#RRGGBB,..." -> explicit offsets
+    """
+    parts = [p.strip() for p in color_arg.split(",") if p.strip()]
+    if not parts:
+        raise ValueError("No color stops provided")
+
+    if ":" in parts[0]:
+        stops = []
+        for part in parts:
+            if ":" not in part:
+                raise ValueError(f"Invalid offset:color format: {part}")
+            off_str, col_str = part.split(":", 1)
+            try:
+                offset = float(off_str)
+            except ValueError:
+                raise ValueError(f"Offset must be a number: {off_str}")
+            if offset < 0 or offset > 1:
+                raise ValueError(f"Offset must be between 0 and 1: {offset}")
+            rgb = hex_to_rgb(col_str)
+            stops.append((offset, rgb))
+        stops.sort(key=lambda x: x[0])
+        return stops
+    else:
+        hex_list = parts
+        n = len(hex_list)
+        if n == 1:
+            return [(0.0, hex_to_rgb(hex_list[0]))]
+        stops = []
+        for i, col in enumerate(hex_list):
+            offset = i / (n - 1)
+            stops.append((offset, hex_to_rgb(col)))
+        return stops
 
 
 def _get_native_color_contours(image_path, units, glyph_name, glyf_table, max_colors=8):
@@ -377,7 +428,7 @@ def _get_native_color_contours(image_path, units, glyph_name, glyf_table, max_co
 
 def recolor_font(
     file_path,
-    colors,
+    color_stops,
     angle=0,
     bands=None,
     bootstrapper=None,
@@ -397,7 +448,7 @@ def recolor_font(
             del font["COLR"]
 
         if bands is None:
-            n_bands = max(2, len(colors) * 8)
+            n_bands = max(2, len(color_stops) * 8)
         else:
             n_bands = max(2, bands)
 
@@ -415,7 +466,7 @@ def recolor_font(
         master_palette = []
         for i in range(n_bands):
             t = i / (n_bands - 1) if n_bands > 1 else 0.5
-            r, g, b, a = interpolate_gradient(colors, t)
+            r, g, b, a = interpolate_gradient(color_stops, t)
             master_palette.append((r, g, b, a))
         font["CPAL"] = buildCPAL([master_palette])
 
@@ -492,7 +543,7 @@ def recolor_font(
                     if max_coord - min_coord < 1:
                         continue
                     all_y = [pt[1] for poly in polys for pt in poly]
-                    x_min, x_max = min(all_y), max(all_y)  # used for clipping bounds
+                    x_min, x_max = min(all_y), max(all_y)
                     polys_rot = polys
                     axis = "x"
                 else:
@@ -547,7 +598,7 @@ def recolor_font(
 
         font.save(output_path)
         print(
-            f"Processed (gradient, {len(colors)} stops, angle={angle}°, bands={n_bands}): {output_path}"
+            f"Processed (gradient, {len(color_stops)} stops, angle={angle}°, bands={n_bands}): {output_path}"
         )
 
         if bootstrapper:
@@ -579,7 +630,7 @@ def _derive_buildericons_dir_from_path(target_dir):
 
 def process_directory(
     target_dir,
-    colors,
+    color_stops,
     angle=0,
     bands=None,
     bootstrapper=None,
@@ -599,7 +650,7 @@ def process_directory(
                 continue
             recolor_font(
                 os.path.join(root, file),
-                colors,
+                color_stops,
                 angle=angle,
                 bands=bands,
                 bootstrapper=bootstrapper,
@@ -624,7 +675,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--color",
         required=True,
-        help="Single hex (#RRGGBB) or comma‑separated list for gradient",
+        help="Gradient stops: either comma-separated hex colors (equally spaced) or offset:hex pairs, e.g. '0.0:#FF0000,0.5:#00FF00,1.0:#0000FF'",
     )
     parser.add_argument(
         "--angle",
@@ -647,23 +698,11 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    color_input = args.color.strip()
-    if "," in color_input:
-        colors_list = [c.strip() for c in color_input.split(",")]
-        try:
-            for c in colors_list:
-                hex_to_rgb(c)
-        except ValueError as e:
-            print(f"Invalid color: {e}")
-            sys.exit(1)
-        colors = colors_list
-    else:
-        try:
-            hex_to_rgb(color_input)
-        except ValueError as e:
-            print(f"Invalid color: {e}")
-            sys.exit(1)
-        colors = color_input
+    try:
+        color_stops = parse_color_stops(args.color)
+    except Exception as e:
+        print(f"Invalid color specification: {e}")
+        sys.exit(1)
 
     bootstrapper = get_default_bootstrapper_for_platform()
     if args.bootstrapper:
@@ -685,7 +724,7 @@ if __name__ == "__main__":
 
     process_directory(
         args.path,
-        colors,
+        color_stops,
         angle=args.angle,
         bands=args.bands,
         bootstrapper=bootstrapper,
