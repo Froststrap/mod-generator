@@ -434,6 +434,7 @@ def recolor_font(
     bootstrapper=None,
     mod_name=None,
     image_map=None,
+    skip_glyphs=None,
 ):
     global SUB_GLYPH_CACHE
     SUB_GLYPH_CACHE.clear()
@@ -483,6 +484,8 @@ def recolor_font(
 
         solid_palette_cache = {}
 
+        skip_set = set(skip_glyphs) if skip_glyphs else set()
+
         def get_solid_color_idx(hex_col):
             if hex_col not in solid_palette_cache:
                 r, g, b = hex_to_rgb(hex_col)
@@ -493,11 +496,16 @@ def recolor_font(
             return solid_palette_cache[hex_col]
 
         print(f"Processing {total} glyphs with {n_bands} bands each...")
+        if skip_set:
+            print(f"Skipping {len(skip_set)} glyphs: {', '.join(sorted(skip_set))}")
 
         for glyph_name in glyphs_to_process:
             processed += 1
             if processed % 50 == 0 or processed == total:
                 print(f"  Glyph {processed}/{total} ({glyph_name})", flush=True)
+
+            if glyph_name in skip_set:
+                continue
 
             img_path = None
             if image_map and glyph_name in image_map:
@@ -636,6 +644,7 @@ def process_directory(
     bootstrapper=None,
     mod_name=None,
     image_map=None,
+    skip_glyphs=None,
 ):
     if not os.path.isdir(target_dir):
         print(f"Invalid directory: {target_dir}")
@@ -656,6 +665,7 @@ def process_directory(
                 bootstrapper=bootstrapper,
                 mod_name=mod_name,
                 image_map=image_map,
+                skip_glyphs=skip_glyphs,
             )
             count += 1
 
@@ -696,6 +706,11 @@ if __name__ == "__main__":
         default=None,
         help="Comma‑separated glyph:image_path pairs, e.g. 'uniF200:C:/img.png,another:img2.png'",
     )
+    parser.add_argument(
+        "--skip-glyphs",
+        default=None,
+        help="Comma‑separated list of glyph names to skip (do not color). Example: 'uniE001,uniE002,uniF123'",
+    )
     args = parser.parse_args()
 
     try:
@@ -722,6 +737,12 @@ if __name__ == "__main__":
         if image_map:
             print(f"Loaded image map for glyphs: {', '.join(image_map.keys())}")
 
+    skip_glyphs = None
+    if args.skip_glyphs:
+        skip_glyphs = [g.strip() for g in args.skip_glyphs.split(",") if g.strip()]
+        if skip_glyphs:
+            print(f"Will skip coloring these glyphs: {', '.join(skip_glyphs)}")
+
     process_directory(
         args.path,
         color_stops,
@@ -730,4 +751,5 @@ if __name__ == "__main__":
         bootstrapper=bootstrapper,
         mod_name=args.mod_name,
         image_map=image_map,
+        skip_glyphs=skip_glyphs,
     )
