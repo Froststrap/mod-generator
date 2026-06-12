@@ -7,6 +7,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 import argparse
+import math
 import os
 import sys
 from pathlib import Path
@@ -58,6 +59,21 @@ def canonicalize_bootstrapper(name):
         if b.lower() == name.lower():
             return b
     raise ValueError(f"Invalid bootstrapper '{name}'")
+
+
+def rotate_points(points, angle_deg, cx=0, cy=0):
+    """Rotate a list of (x, y) points by angle_deg around (cx, cy)."""
+    rad = math.radians(angle_deg)
+    cos_a = math.cos(rad)
+    sin_a = math.sin(rad)
+    rotated = []
+    for x, y in points:
+        dx = x - cx
+        dy = y - cy
+        rx = cx + dx * cos_a - dy * sin_a
+        ry = cy + dx * sin_a + dy * cos_a
+        rotated.append((rx, ry))
+    return rotated
 
 
 def _quad_sample(p0, p1, p2):
@@ -386,12 +402,15 @@ def recolor_font(
             n_bands = max(2, bands)
 
         angle = angle % 360
-        if abs(angle - 90) < 45 or abs(angle - 270) < 45:
-            axis = "x"
-            print(f"Using horizontal gradient (angle ~ {angle}°)")
+        if abs(angle) < 1e-6 or abs(angle - 180) < 1e-6:
+            use_rotation = False
+            effective_angle = 0
+        elif abs(angle - 90) < 1e-6 or abs(angle - 270) < 1e-6:
+            use_rotation = False
+            effective_angle = 0
         else:
-            axis = "y"
-            print(f"Using vertical gradient (angle ~ {angle}°)")
+            use_rotation = True
+            effective_angle = angle
 
         master_palette = []
         for i in range(n_bands):
@@ -458,21 +477,33 @@ def recolor_font(
             if not polys:
                 continue
 
-            if axis == "y":
-                all_coords = [pt[1] for poly in polys for pt in poly]
-                min_coord, max_coord = min(all_coords), max(all_coords)
+            if use_rotation:
+                polys_rot = [rotate_points(poly, effective_angle) for poly in polys]
+                all_y = [pt[1] for poly in polys_rot for pt in poly]
+                min_coord, max_coord = min(all_y), max(all_y)
                 if max_coord - min_coord < 1:
                     continue
-                all_x = [pt[0] for poly in polys for pt in poly]
+                all_x = [pt[0] for poly in polys_rot for pt in poly]
                 x_min, x_max = min(all_x), max(all_x)
             else:
-                all_coords = [pt[0] for poly in polys for pt in poly]
-                min_coord, max_coord = min(all_coords), max(all_coords)
-                if max_coord - min_coord < 1:
-                    continue
-                all_y = [pt[1] for poly in polys for pt in poly]
-                x_min, x_max = min(all_y), max(all_y)
-                y_min, y_max = min(all_y), max(all_y)
+                if abs(angle - 90) < 1e-6 or abs(angle - 270) < 1e-6:
+                    all_coords = [pt[0] for poly in polys for pt in poly]
+                    min_coord, max_coord = min(all_coords), max(all_coords)
+                    if max_coord - min_coord < 1:
+                        continue
+                    all_y = [pt[1] for poly in polys for pt in poly]
+                    x_min, x_max = min(all_y), max(all_y)  # used for clipping bounds
+                    polys_rot = polys
+                    axis = "x"
+                else:
+                    all_coords = [pt[1] for poly in polys for pt in poly]
+                    min_coord, max_coord = min(all_coords), max(all_coords)
+                    if max_coord - min_coord < 1:
+                        continue
+                    all_x = [pt[0] for poly in polys for pt in poly]
+                    x_min, x_max = min(all_x), max(all_x)
+                    polys_rot = polys
+                    axis = "y"
 
             orig_aw = font["hmtx"].metrics[glyph_name][0]
             band_step = (max_coord - min_coord) / n_bands
@@ -483,16 +514,21 @@ def recolor_font(
                 hi = min_coord + (band + 1) * band_step
                 if band < n_bands - 1:
                     hi += 50.0
-                if axis == "y":
+
+                if use_rotation:
                     clipped = _clip_contours_to_band(
-                        polys, lo, hi, x_min, x_max, axis="y"
+                        polys_rot, lo, hi, x_min, x_max, axis="y"
                     )
+                    if clipped:
+                        clipped = [rotate_points(poly, -effective_angle) for poly in clipped]
                 else:
                     clipped = _clip_contours_to_band(
-                        polys, lo, hi, y_min, y_max, axis="x"
+                        polys_rot, lo, hi, x_min, x_max, axis=axis
                     )
+
                 if not clipped:
                     continue
+
                 sub_name = _write_sub_glyph(
                     glyph_name, band, clipped, font, glyf, orig_aw
                 )
@@ -511,7 +547,7 @@ def recolor_font(
 
         font.save(output_path)
         print(
-            f"Processed (gradient, {len(colors)} stops, angle≈{angle}°, bands={n_bands}): {output_path}"
+            f"Processed (gradient, {len(colors)} stops, angle={angle}°, bands={n_bands}): {output_path}"
         )
 
         if bootstrapper:
@@ -594,7 +630,7 @@ if __name__ == "__main__":
         "--angle",
         type=int,
         default=0,
-        help="Approximate direction: 0=vertical, 90=horizontal (others map to closest)",
+        help="Gradient direction in degrees (0 = vertical top‑to‑bottom, 90 = horizontal left‑to‑right, any angle works)",
     )
     parser.add_argument(
         "--bands",
