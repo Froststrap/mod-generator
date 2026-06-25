@@ -2,6 +2,7 @@
 mod_generator.spec
 dist/
 build/
+.DS_Store
 
 # import cache
 __pycache__/

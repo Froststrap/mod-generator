@@ -341,7 +341,7 @@ def parse_color_stops(color_arg):
         return stops
 
 
-def _get_native_color_contours(image_path, units, glyph_name, glyf_table, max_colors=8):
+def _get_native_color_contours(image_path, units, glyph_name, glyf_table, max_colors=32):
     try:
         with Image.open(image_path) as img:
             img = img.convert("RGBA")
@@ -425,6 +425,40 @@ def _get_native_color_contours(image_path, units, glyph_name, glyf_table, max_co
             pass
     return final_color_contours
 
+def _get_image_contours(image_path: str, units: int, icon_name: str, glyf_table) -> list[list[tuple]]:
+    try:
+        with Image.open(image_path, formats=("PNG",)) as img: 
+            img = img.convert("RGBA")
+        img.thumbnail((128, 128), resample=Image.Resampling.LANCZOS)
+    except Exception: 
+        return []
+    arr = np.array(img)
+    h, w = arr.shape[:2]
+    og = glyf_table.get(icon_name)
+    x_min, y_max, bbox_w, bbox_h = (float(og.xMin), float(og.yMax), float(og.xMax - og.xMin), float(og.yMax - og.yMin)) if og else (0.0, float(units), float(units), float(units))
+    scale = min(max(1.0, bbox_w) / max(1, w), max(1.0, bbox_h) / max(1, h))
+    top_x, top_y = x_min + (bbox_w - (w * scale)) / 2.0, y_max - (bbox_h - (h * scale)) / 2.0
+    contours = []
+    for py in range(h):
+        px = 0
+        while px < w:
+            if arr[py, px][3] >= 80:
+                start_x = px
+                while px < w and arr[py, px][3] >= 80: 
+                    px += 1
+                fy_bot, fy_top = top_y - (py + 1) * scale, top_y - py * scale
+                x0, x1 = top_x + start_x * scale, top_x + px * scale
+                contours.append([(x0, fy_bot - 0.5), (x1 + 0.5, fy_bot - 0.5), (x1 + 0.5, fy_top + 0.5), (x0, fy_top + 0.5)])
+            else: px += 1     
+    if not contours: 
+        return []
+    pc = pyclipper.Pyclipper(); SCALE = 1000.0
+    for poly in contours: 
+        pc.AddPath([(int(x * SCALE), int(y * SCALE)) for x, y in poly], pyclipper.PT_SUBJECT, True)
+    try: 
+        return [[(pt[0] / SCALE, pt[1] / SCALE) for pt in p] for p in pc.Execute(pyclipper.CT_UNION, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO)]
+    except:
+        return contours
 
 def recolor_font(
     file_path,
@@ -435,6 +469,7 @@ def recolor_font(
     mod_name=None,
     image_map=None,
     skip_glyphs=None,
+    skip_color_matching=False
 ):
     global SUB_GLYPH_CACHE
     SUB_GLYPH_CACHE.clear()
@@ -511,30 +546,31 @@ def recolor_font(
             if image_map and glyph_name in image_map:
                 img_path = image_map[glyph_name]
 
+            polys = None
             if img_path and Path(img_path).is_file():
                 units_per_em = font["head"].unitsPerEm
-                native_dict = _get_native_color_contours(
-                    img_path, units_per_em, glyph_name, glyf
-                )
-                if native_dict:
-                    orig_aw = font["hmtx"].metrics[glyph_name][0]
-                    layers = []
-                    for hex_col, contours in native_dict.items():
-                        color_idx = get_solid_color_idx(hex_col)
-                        sub_name = _write_sub_glyph(
-                            glyph_name, hex_col, contours, font, glyf, orig_aw
-                        )
-                        if sub_name:
-                            layers.append((sub_name, color_idx))
-                            if sub_name not in extra_names:
-                                extra_names.append(sub_name)
-                    if layers:
-                        color_glyphs[glyph_name] = layers
-                    continue
-
-            polys = _get_outline_contours(font, glyph_name)
-            if not polys:
-                continue
+                if not skip_color_matching:
+                    native_dict = _get_native_color_contours(
+                        img_path, units_per_em, glyph_name, glyf
+                    )
+                    if native_dict:
+                        orig_aw = font["hmtx"].metrics[glyph_name][0]
+                        layers = []
+                        for hex_col, contours in native_dict.items():
+                            color_idx = get_solid_color_idx(hex_col)
+                            sub_name = _write_sub_glyph(
+                                glyph_name, hex_col, contours, font, glyf, orig_aw
+                            )
+                            if sub_name:
+                                layers.append((sub_name, color_idx))
+                                if sub_name not in extra_names:
+                                    extra_names.append(sub_name)
+                        if layers:
+                            color_glyphs[glyph_name] = layers
+                        continue
+                else: polys = _get_image_contours(img_path, units_per_em, glyph_name, glyf)
+            if not polys: polys = _get_outline_contours(font, glyph_name)
+            if not polys: continue
 
             if use_rotation:
                 polys_rot = [rotate_points(poly, effective_angle) for poly in polys]
@@ -645,6 +681,7 @@ def process_directory(
     mod_name=None,
     image_map=None,
     skip_glyphs=None,
+    skip_color_matching=False
 ):
     if not os.path.isdir(target_dir):
         print(f"Invalid directory: {target_dir}")
@@ -666,6 +703,7 @@ def process_directory(
                 mod_name=mod_name,
                 image_map=image_map,
                 skip_glyphs=skip_glyphs,
+                skip_color_matching=skip_color_matching
             )
             count += 1
 
@@ -711,6 +749,11 @@ if __name__ == "__main__":
         default=None,
         help="Comma‑separated list of glyph names to skip (do not color). Example: 'uniE001,uniE002,uniF123'",
     )
+    parser.add_argument(
+        "--skip-color-matching", 
+        action="store_true",
+        help="Disable automatic color inference for images"
+    )
     args = parser.parse_args()
 
     try:
@@ -752,4 +795,5 @@ if __name__ == "__main__":
         mod_name=args.mod_name,
         image_map=image_map,
         skip_glyphs=skip_glyphs,
+        skip_color_matching=args.skip_color_matching
     )
