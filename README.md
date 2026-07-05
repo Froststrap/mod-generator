@@ -25,7 +25,11 @@ However, you can use this standalone from Froststrap. To run the mod generator y
  - `colors`: colors to use for the font, in hex code format. With gradient support, you list all the hex codes in order from ascending to descending order to be displayed on the glyph.
  - `angle`: angle to rotate the gradient, in degrees.
  - `bands`: number of bands to use for the gradient, higher amount of bands means higher quality but longer time to generate.
+ - `image-map`: [OPTIONAL] comma-separated map of glyph to image, to match the glyph to the assigned image. Example: `uniF200:C:/img.png,another:img2.png`
  - `bootstrapper`: [OPTIONAL] name of the bootstrapper to use, accepted bootstrappers are `Bloxstrap`, `Fishstrap`, `Froststrap`, `Luczystrap`, or `Lunastrap`. This is used to automatically put the mod into the desired bootstrapper.
+ - `skip-glyphs`: [OPTIONAL] comma-separated list of names of the glyphs you would like to skip or don't color. Example: `uniE001,uniE002,uniF123`
+ - `skip-color-matching`: [OPTIONAL] Disable trying to color match the glyphs with images given in `--image-map`.
+ - `max-colors`: [OPTIONAL] Maximum number of colors to inference from images given in `--image-map`.
 
 ### Example Usage
 To create a font file for the colour #FF0000 and add mod to the bootstrapper Fishstrap, an example of the command would be:
