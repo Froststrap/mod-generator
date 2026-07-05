@@ -341,14 +341,20 @@ def parse_color_stops(color_arg):
         return stops
 
 
-def _get_native_color_contours(image_path, units, glyph_name, glyf_table, max_colors=32):
+def _get_native_color_contours(image_path, units, glyph_name, glyf_table, max_colors=64):
     try:
         with Image.open(image_path) as img:
             img = img.convert("RGBA")
-            img.thumbnail((128, 128), resample=Image.Resampling.LANCZOS)
-            alpha = img.getchannel("A")
-            rgb = img.convert("RGB").quantize(
-                colors=max_colors, method=Image.Quantize.MAXCOVERAGE
+            orig_w, orig_h = img.size
+            tar_size = 128 if max(orig_w, orig_h) < 128 else 256
+            img.thumbnail((tar_size, tar_size), resample=Image.Resampling.LANCZOS)
+            alpha = img.getchannel("A").point(lambda p: 255 if p >= 128 else 0)
+            img.putalpha(alpha)
+            rgb = img.convert("RGB")
+            rgb = rgb.quantize(
+                colors=max_colors, 
+                method=Image.Quantize.FASTOCTREE, 
+                dither=Image.Dither.NONE
             )
             img = rgb.convert("RGBA")
             img.putalpha(alpha)
@@ -393,16 +399,36 @@ def _get_native_color_contours(image_path, units, glyph_name, glyf_table, max_co
                 x1 = top_x + px * scale
                 color_rects[hex_col].append(
                     [
-                        (x0, fy_bot - 0.5),
-                        (x1 + 0.5, fy_bot - 0.5),
-                        (x1 + 0.5, fy_top + 0.5),
-                        (x0, fy_top + 0.5),
+                        (x0, fy_bot),
+                        (x1, fy_bot),
+                        (x1, fy_top),
+                        (x0, fy_top),
                     ]
                 )
             else:
                 px += 1
     final_color_contours = {}
     SCALE = 1000.0
+    pc_master = pyclipper.Pyclipper()
+    for rects in color_rects.values():
+        for poly in rects: 
+            pc_master.AddPath([(int(x * SCALE), int(y * SCALE)) for x, y in poly], pyclipper.PT_SUBJECT, True)     
+    try: 
+        sil = pc_master.Execute(pyclipper.CT_UNION, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO)
+        if sil:
+            smooth_radius = int(scale * 0.5 * SCALE)
+            if smooth_radius > 0:
+                pco_smooth = pyclipper.PyclipperOffset()
+                pco_smooth.AddPaths(sil, pyclipper.JT_ROUND, pyclipper.ET_CLOSEDPOLYGON)
+                sil = pco_smooth.Execute(smooth_radius)
+
+                pco_smooth.Clear()
+                pco_smooth.AddPaths(sil, pyclipper.JT_ROUND, pyclipper.ET_CLOSEDPOLYGON)
+                sil = pco_smooth.Execute(-smooth_radius)
+    except Exception: sil = []
+    if not sil: return {}
+    safe_expansion = scale * 1.5
+    offset_delta = safe_expansion * SCALE
     for hex_col, rects in color_rects.items():
         pc = pyclipper.Pyclipper()
         for poly in rects:
@@ -412,11 +438,18 @@ def _get_native_color_contours(image_path, units, glyph_name, glyf_table, max_co
                 True,
             )
         try:
+            unioned = pc.Execute(pyclipper.CT_UNION, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO)
+            if not unioned: continue
+            pco = pyclipper.PyclipperOffset()
+            pco.AddPaths(unioned, pyclipper.JT_ROUND, pyclipper.ET_CLOSEDPOLYGON)
+            dilated = pco.Execute(offset_delta)
+            pc_clip = pyclipper.Pyclipper()
+            pc_clip.AddPaths(dilated, pyclipper.PT_SUBJECT, True)
+            pc_clip.AddPaths(sil, pyclipper.PT_CLIP, True)
+            final_clipped = pc_clip.Execute(pyclipper.CT_INTERSECTION, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO)
             result = [
                 [(pt[0] / SCALE, pt[1] / SCALE) for pt in p]
-                for p in pc.Execute(
-                    pyclipper.CT_UNION, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO
-                )
+                for p in final_clipped
                 if len(p) >= 3
             ]
             if result:
@@ -429,7 +462,9 @@ def _get_image_contours(image_path: str, units: int, icon_name: str, glyf_table)
     try:
         with Image.open(image_path, formats=("PNG",)) as img: 
             img = img.convert("RGBA")
-        img.thumbnail((128, 128), resample=Image.Resampling.LANCZOS)
+        orig_w, orig_h = img.size
+        tar_size = 128 if max(orig_w, orig_h) < 128 else 256
+        img.thumbnail((tar_size, tar_size), resample=Image.Resampling.LANCZOS)
     except Exception: 
         return []
     arr = np.array(img)
@@ -469,7 +504,8 @@ def recolor_font(
     mod_name=None,
     image_map=None,
     skip_glyphs=None,
-    skip_color_matching=False
+    skip_color_matching=False,
+    max_colors=64
 ):
     global SUB_GLYPH_CACHE
     SUB_GLYPH_CACHE.clear()
@@ -551,7 +587,7 @@ def recolor_font(
                 units_per_em = font["head"].unitsPerEm
                 if not skip_color_matching:
                     native_dict = _get_native_color_contours(
-                        img_path, units_per_em, glyph_name, glyf
+                        img_path, units_per_em, glyph_name, glyf, max_colors=max_colors
                     )
                     if native_dict:
                         orig_aw = font["hmtx"].metrics[glyph_name][0]
@@ -681,7 +717,8 @@ def process_directory(
     mod_name=None,
     image_map=None,
     skip_glyphs=None,
-    skip_color_matching=False
+    skip_color_matching=False,
+    max_colors=64
 ):
     if not os.path.isdir(target_dir):
         print(f"Invalid directory: {target_dir}")
@@ -703,7 +740,8 @@ def process_directory(
                 mod_name=mod_name,
                 image_map=image_map,
                 skip_glyphs=skip_glyphs,
-                skip_color_matching=skip_color_matching
+                skip_color_matching=skip_color_matching,
+                max_colors=max_colors
             )
             count += 1
 
@@ -754,6 +792,12 @@ if __name__ == "__main__":
         action="store_true",
         help="Disable automatic color inference for images"
     )
+    parser.add_argument(
+        "--max-colors",
+        type=int,
+        default=64,
+        help="Maximum number of colors to inference from images",
+    )
     args = parser.parse_args()
 
     try:
@@ -795,5 +839,6 @@ if __name__ == "__main__":
         mod_name=args.mod_name,
         image_map=image_map,
         skip_glyphs=skip_glyphs,
-        skip_color_matching=args.skip_color_matching
+        skip_color_matching=args.skip_color_matching,
+        max_colors=args.max_colors
     )
