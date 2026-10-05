@@ -2,6 +2,7 @@
 mod_generator.spec
 dist/
 build/
+target/
 .DS_Store
 
 # import cache

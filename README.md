@@ -1,7 +1,7 @@
-The mod generator repository for [Froststrap](https://github.com/RealMeddsam/Froststrap)
+The mod generator repository for [Froststrap](https://github.com/Froststrap/Froststrap)
 
 >[!NOTE]
-> Now with gradient support! (as of mod generator 2.0)
+> Now with gradient support! (as 2.0)
 
 
 ### Requirements
@@ -53,12 +53,12 @@ uv sync
 
 you can then run the file:
 ```
-uv run src/main.py [ARGUMENTS]
+uv run py-src/main.py [ARGUMENTS]
 ```
 
 To build the project into an executable, run:
 ```
-uv run pyinstaller --onefile --name mod_generator src/main.py
+uv run pyinstaller --onefile --name mod_generator py-src/main.py
 ```
 
 with the generated exe file being in the `dist/` folder.
