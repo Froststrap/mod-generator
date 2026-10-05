@@ -1,0 +1,93 @@
+//! Implementing data types used across the codebase
+
+use std::{
+    path::PathBuf,
+    fmt::{
+        Formatter,
+        Display
+    },
+};
+
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+pub enum Bootstrapper {
+    Sober,
+    Froststrap
+}
+
+impl Display for Bootstrapper {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        use Bootstrapper::*;
+        let str = match self {
+            Sober => "Sober",
+            Froststrap => "Froststrap",
+        };
+        write!(
+            f,
+            "{str}"
+        )
+    }
+}
+
+pub struct FontDir(PathBuf);
+
+impl Into<PathBuf> for FontDir {
+    fn into(self) -> PathBuf {
+        self.0
+    }
+}
+
+impl FontDir {
+    #[cfg(target_os = "linux")]
+    pub fn get(
+        bootstrapper: Bootstrapper,
+        _mod_name: Option<String>, 
+    ) -> Option<Self> {
+        // TODO: Right now just mirroring old code
+        // this in Rust is pretty stupid
+        if !(bootstrapper == Bootstrapper::Sober) {
+            return None;
+        }
+
+        Some(Self(
+            (dirs::home_dir()?)
+                .join(".var")
+                .join("app")
+                .join("org.vinegarhq.Sober")
+                .join("data")
+                .join("asset_overlay")
+                .join("ExtraContent")
+                .join("LuaPackages")
+                .join("Packages")
+                .join("_Index")
+                .join("BuilderIcons")
+                .join("BuilderIcons")
+                .join("Fonts")
+        ))
+    }
+    // #[cfg(target_os = "windows")]
+    pub fn get(
+        bootstrapper: Bootstrapper,
+        mod_name: Option<String>, 
+    ) -> Option<Self> {
+        let Some(lad) = dirs::config_local_dir() else {
+            return None;
+        };
+
+        let base_path = if bootstrapper == Bootstrapper::Froststrap && mod_name.is_some() {
+            lad.join(bootstrapper.to_string()).join("Modifications").join(mod_name.unwrap())
+        } else {
+            lad.join(bootstrapper.to_string()).join("Modifications")
+        };
+
+        Some(Self(
+            base_path
+                .join("ExtraContent")
+                .join("LuaPackages")
+                .join("Packages")
+                .join("_Index")
+                .join("BuilderIcons")
+                .join("BuilderIcons")
+                .join("Font")
+        ))
+    }
+}
