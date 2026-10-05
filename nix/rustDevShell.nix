@@ -18,6 +18,7 @@ let
       minimal.toolchain
       latest.clippy
       latest.rust-analyzer
+      latest.rust-docs
     ];
 in
 mkFragment {

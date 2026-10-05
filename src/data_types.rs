@@ -1,6 +1,7 @@
 //! Implementing data types used across the codebase
 
 use std::{
+    env,
     path::PathBuf,
     fmt::{
         Formatter,
@@ -28,6 +29,7 @@ impl Display for Bootstrapper {
     }
 }
 
+#[derive(Debug)]
 pub struct FontDir(PathBuf);
 
 impl Into<PathBuf> for FontDir {
@@ -37,7 +39,7 @@ impl Into<PathBuf> for FontDir {
 }
 
 impl FontDir {
-    #[cfg(target_os = "linux")]
+    // #[cfg(target_os = "linux")]
     pub fn get(
         bootstrapper: Bootstrapper,
         _mod_name: Option<String>, 
@@ -49,7 +51,7 @@ impl FontDir {
         }
 
         Some(Self(
-            (dirs::home_dir()?)
+            (env::home_dir()?)
                 .join(".var")
                 .join("app")
                 .join("org.vinegarhq.Sober")
@@ -64,12 +66,12 @@ impl FontDir {
                 .join("Fonts")
         ))
     }
-    // #[cfg(target_os = "windows")]
+    #[cfg(target_os = "windows")]
     pub fn get(
         bootstrapper: Bootstrapper,
         mod_name: Option<String>, 
     ) -> Option<Self> {
-        let Some(lad) = dirs::config_local_dir() else {
+        let Some(lad) = env::var_os("LOCALAPPDATA").map(PathBuf::from) else {
             return None;
         };
 
