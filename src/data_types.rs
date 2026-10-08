@@ -1,13 +1,17 @@
+// SPDX-FileCopyrightText: 2026 Froststrap
+//
+// SPDX-License-Identifier: MPL-2.0
+
 //! Implementing data types used across the codebase
 
 use std::{
-    fmt::{
-        Formatter,
-        Display
-    },
-    env, fs, io,
+    env,
+    fmt::{Display, Formatter},
+    fs,
     path::{Path, PathBuf},
 };
+
+use crate::error::{Error, IoContext, Result};
 
 const ROOT_SUBPATH: [&str; 6] = [
     "ExtraContent", "LuaPackages", "Packages", "_Index", "BuilderIcons", "BuilderIcons",
@@ -49,20 +53,16 @@ impl Default for Bootstrapper {
 }
 
 impl Display for Bootstrapper {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         use Bootstrapper::*;
-        let str = match self {
+        f.write_str(match self {
             Bloxstrap => "Bloxstrap",
             Fishstrap => "Fishstrap",
             Froststrap => "Froststrap",
             Luczystrap => "Luczystrap",
             Lunastrap => "Lunastrap",
             Sober => "Sober",
-        };
-        write!(
-            f,
-            "{str}"
-        )
+        })
     }
 }
 
@@ -76,6 +76,7 @@ impl From<FontDir> for PathBuf {
 }
 
 impl FontDir {
+    #[allow(dead_code)]
     fn from_base(base: PathBuf) -> Self {
         let mut p = base;
         p.extend(ROOT_SUBPATH);
@@ -109,6 +110,7 @@ impl FontDir {
 
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     pub fn get(_: Bootstrapper, _: Option<&str>) -> Option<Self> {
+        let _ = env::var_os("HOME");
         None
     }
 
@@ -120,20 +122,35 @@ impl FontDir {
         self.0.parent()
     }
 
-    pub fn copy_font(&self, font: &Path) -> io::Result<PathBuf> {
-        let name = font.file_name().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "font path has no file name")
-        })?;
-        fs::create_dir_all(&self.0)?;
+    pub fn copy_font(&self, font: &Path) -> Result<PathBuf> {
+        let name = font
+            .file_name()
+            .ok_or_else(|| Error::font(font, "path has no file name"))?;
+        fs::create_dir_all(&self.0).at(&self.0)?;
         let dest = self.0.join(name);
-        fs::copy(font, &dest)?;
+        fs::copy(font, &dest).at(&dest)?;
         Ok(dest)
     }
+}
 
-    pub fn write_builder_icons_json(&self) -> io::Result<()> {
-        let root = self.root().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "font dir has no parent")
-        })?;
-        fs::write(root.join("BuilderIcons.json"), BUILDER_ICONS_JSON)
-    }
+pub fn write_builder_icons_json(root: &Path) -> Result<()> {
+    fs::create_dir_all(root).at(root)?;
+    let file = root.join("BuilderIcons.json");
+    fs::write(&file, BUILDER_ICONS_JSON).at(file)
+}
+
+pub fn derive_root(dir: &Path) -> Option<PathBuf> {
+    dir.ancestors()
+        .find(|a| {
+            let comps: Vec<String> = a
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+                .collect();
+            comps.len() >= ROOT_SUBPATH.len()
+                && comps[comps.len() - ROOT_SUBPATH.len()..]
+                    .iter()
+                    .zip(ROOT_SUBPATH)
+                    .all(|(a, b)| *a == b.to_lowercase())
+        })
+        .map(Path::to_path_buf)
 }

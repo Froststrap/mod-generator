@@ -1,19 +1,22 @@
-// Froststrap
-// Copyright (c) Froststrap Team
-//
-// This file is part of Froststrap and is distributed under the terms of the
-// Mozilla Public License 2.0.
+// SPDX-FileCopyrightText: 2026 Froststrap
 //
 // SPDX-License-Identifier: MPL-2.0
 
-use clap::Parser;
-use std::path::PathBuf;
-use mod_generator::data_types::{Bootstrapper,FontDir};
+use std::{collections::{HashMap, HashSet}, path::PathBuf, process::ExitCode};
 
-fn parse_image_pair(s: &str) -> Result<(String, PathBuf), String> {
+use clap::Parser;
+use mod_generator::{
+    color::Gradient,
+    data_types::Bootstrapper,
+    error::{Error, Result},
+    font::RecolorOptions,
+    process::process_directory,
+};
+
+fn parse_image_pair(s: &str) -> Result<(String, PathBuf), Error> {
     let (glyph, path) = s
         .split_once(':')
-        .ok_or_else(|| format!("invalid image-map entry '{s}' (missing colon)"))?;
+        .ok_or_else(|| Error::ImageMap(format!("'{s}' (missing colon)")))?;
     Ok((glyph.trim().to_string(), PathBuf::from(path.trim())))
 }
 
@@ -23,13 +26,13 @@ fn parse_image_pair(s: &str) -> Result<(String, PathBuf), String> {
 #[command(about = "Generates mods", long_about = None)]
 struct AppArgs {
     #[arg(long)]
-    path: String,
+    path: PathBuf,
     #[arg(long)]
-    color: String,
+    color: Gradient,
+    #[arg(long, default_value_t = 0, allow_negative_numbers = true)]
+    angle: i32,
     #[arg(long)]
-    angle: u16,
-    #[arg(long)]
-    bands: u8,
+    bands: Option<u16>,
     #[arg(long, value_enum, ignore_case = true, default_value_t = Bootstrapper::default())]
     bootstrapper: Bootstrapper,
     #[arg(long)]
@@ -40,14 +43,42 @@ struct AppArgs {
     skip_glyphs: Vec<String>,
     #[arg(long)]
     skip_color_matching: bool,
-    #[arg(long)]
-    max_colors: u8,    
+    #[arg(long, default_value_t = 64)]
+    max_colors: u8,
 }
 
-pub fn main() {
+fn run() -> Result<bool> {
     let args = AppArgs::parse();
 
-    dbg!("args={args:#?}");
-    println!("Hello!");
-    println!("FontDir={:?}", FontDir::get(args.bootstrapper, args.mod_name.as_deref()).unwrap())
+    if !args.image_map.is_empty() {
+        let names: Vec<&str> = args.image_map.iter().map(|(g, _)| g.as_str()).collect();
+        println!("Loaded image map for glyphs: {}", names.join(", "));
+    }
+    if !args.skip_glyphs.is_empty() {
+        println!("Will skip coloring these glyphs: {}", args.skip_glyphs.join(", "));
+    }
+
+    let opts = RecolorOptions {
+        gradient: args.color,
+        angle: args.angle,
+        bands: args.bands,
+        image_map: args.image_map.into_iter().collect::<HashMap<_, _>>(),
+        skip_glyphs: args.skip_glyphs.into_iter().collect::<HashSet<_>>(),
+        skip_color_matching: args.skip_color_matching,
+        max_colors: args.max_colors,
+    };
+
+    let summary = process_directory(&args.path, &opts, args.bootstrapper, args.mod_name.as_deref())?;
+    Ok(summary.failed == 0)
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
