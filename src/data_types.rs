@@ -9,18 +9,32 @@ use std::{
     },
 };
 
-#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Bootstrapper {
+    Bloxstrap,
+    Fishstrap,
+    Froststrap,
+    Luczystrap,
+    Lunastrap,
     Sober,
-    Froststrap
+}
+
+impl Default for Bootstrapper {
+    fn default() -> Self {
+        if cfg!(target_os = "linux") { Self::Sober } else { Self::Froststrap }
+    }
 }
 
 impl Display for Bootstrapper {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         use Bootstrapper::*;
         let str = match self {
-            Sober => "Sober",
+            Bloxstrap => "Bloxstrap",
+            Fishstrap => "Fishstrap",
             Froststrap => "Froststrap",
+            Luczystrap => "Luczystrap",
+            Lunastrap => "Lunastrap",
+            Sober => "Sober",
         };
         write!(
             f,

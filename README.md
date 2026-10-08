@@ -5,15 +5,7 @@ The mod generator repository for [Froststrap](https://github.com/Froststrap/Fros
 
 
 ### Requirements
- - Python 3.10+
- - [uv](https://docs.astral.sh/uv/)
- 
-### Project Dependencies
- - fonttools
- - numpy
- - pyclipper
- - pyinstaller
- - pillow
+ - Rust 2024
  
 ### Usage
 you can use this to create font files for a desired colour, note it does not support image generation for the few images that Roblox still annoyingly uses.
