@@ -33,7 +33,7 @@ struct AppArgs {
     #[arg(long, value_enum, ignore_case = true, default_value_t = Bootstrapper::default())]
     bootstrapper: Bootstrapper,
     #[arg(long)]
-    mod_name: String,
+    mod_name: Option<String>,
     #[arg(long, value_delimiter = ',', value_parser = parse_image_pair)]
     image_map: Vec<(String, PathBuf)>,
     #[arg(long, value_delimiter = ',')]
@@ -49,5 +49,5 @@ pub fn main() {
 
     dbg!("args={args:#?}");
     println!("Hello!");
-    println!("FontDir={:?}", FontDir::get(args.bootstrapper, args.mod_name).unwrap())
+    println!("FontDir={:?}", FontDir::get(args.bootstrapper, args.mod_name.as_deref()).unwrap())
 }
