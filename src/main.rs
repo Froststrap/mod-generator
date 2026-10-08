@@ -45,9 +45,9 @@ struct AppArgs {
 }
 
 pub fn main() {
-    let cli = AppArgs::parse();
+    let args = AppArgs::parse();
 
-    println!("cli={cli:#?}");
+    dbg!("args={args:#?}");
     println!("Hello!");
-    println!("FontDir={:?}", FontDir::get(Bootstrapper::Sober, Some("bumtimks".into())).unwrap())
+    println!("FontDir={:?}", FontDir::get(args.bootstrapper, args.mod_name).unwrap())
 }

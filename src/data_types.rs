@@ -56,7 +56,7 @@ impl FontDir {
     // #[cfg(target_os = "linux")]
     pub fn get(
         bootstrapper: Bootstrapper,
-        _mod_name: Option<String>, 
+        _mod_name: String, 
     ) -> Option<Self> {
         // TODO: Right now just mirroring old code
         // this in Rust is pretty stupid
@@ -83,14 +83,14 @@ impl FontDir {
     #[cfg(target_os = "windows")]
     pub fn get(
         bootstrapper: Bootstrapper,
-        mod_name: Option<String>, 
+        mod_name: String, 
     ) -> Option<Self> {
         let Some(lad) = env::var_os("LOCALAPPDATA").map(PathBuf::from) else {
             return None;
         };
 
-        let base_path = if bootstrapper == Bootstrapper::Froststrap && mod_name.is_some() {
-            lad.join(bootstrapper.to_string()).join("Modifications").join(mod_name.unwrap())
+        let base_path = if bootstrapper == Bootstrapper::Froststrap {
+            lad.join(bootstrapper.to_string()).join("Modifications").join(mod_name)
         } else {
             lad.join(bootstrapper.to_string()).join("Modifications")
         };
