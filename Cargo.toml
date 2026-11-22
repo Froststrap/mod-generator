@@ -29,6 +29,10 @@ regex = "1"
 skrifa = "0.33.2"
 read-fonts = "0.31.3"
 write-fonts = "0.39.1"
+ureq = { version = "3.5.2", default-features = false, features = ["rustls"] }
+zip = { version = "9.8.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
 
 [dependencies.clap]
 version = "4.6"

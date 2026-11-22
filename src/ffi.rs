@@ -9,10 +9,13 @@ use std::{
     sync::OnceLock,
 };
 
+use std::cell::RefCell;
+
 use crate::{
     color::Gradient,
     error::Result,
     font::{RecolorOptions, parse_image_pair},
+    generate::{GenerateConfig, Stage, generate, zip_directory},
     process::recolor_directory,
     texture::{
         Fill, recolor_images as recolor_image_list, recolor_sprite_sheets as recolor_sheets,
@@ -228,6 +231,87 @@ pub unsafe extern "C" fn recolor_sprite_sheets(
         }
         Err(e) => {
             log::error!("{e}");
+            -1
+        }
+    }
+}
+
+thread_local! {
+    static LAST_ERROR: RefCell<CString> = RefCell::new(CString::default());
+}
+
+fn set_last_error(message: impl std::fmt::Display) {
+    let message = message.to_string();
+    log::error!("{message}");
+    let message = CString::new(message.replace('\0', "\\0")).unwrap_or_default();
+    LAST_ERROR.with(|e| *e.borrow_mut() = message);
+}
+
+/// Message of the last failed call on this thread. The pointer stays valid
+/// until the next failing call on the same thread.
+#[unsafe(no_mangle)]
+pub extern "C" fn last_error() -> *const c_char {
+    LAST_ERROR.with(|e| e.borrow().as_ptr())
+}
+
+/// Stages are 1 = downloading, 2 = extracting, 3 = recoloring, 4 = finishing.
+pub type ProgressCallback = extern "C" fn(stage: c_int);
+
+/// Generates a complete mod from a JSON `GenerateConfig`.
+/// Returns 0 on success, or -1 with the reason available from `last_error`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn generate_mod(
+    config_json: *const c_char,
+    progress: Option<ProgressCallback>,
+) -> i32 {
+    let Some(json) = (unsafe { read_str(config_json) }) else {
+        set_last_error("generate_mod called without a configuration");
+        return -1;
+    };
+    let config: GenerateConfig = match serde_json::from_str(json) {
+        Ok(config) => config,
+        Err(e) => {
+            set_last_error(format!("invalid configuration: {e}"));
+            return -1;
+        }
+    };
+
+    let report = |stage: Stage| {
+        if let Some(callback) = progress {
+            callback(stage as c_int);
+        }
+    };
+
+    match generate(&config, &report) {
+        Ok(generated) => {
+            log::info!(
+                "Generated mod for Roblox {} ({})",
+                generated.roblox_version,
+                generated.version_hash
+            );
+            0
+        }
+        Err(e) => {
+            set_last_error(e);
+            -1
+        }
+    }
+}
+
+/// Zips the contents of `source` into `destination`.
+/// Returns 0 on success, or -1 with the reason available from `last_error`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zip_mod(source: *const c_char, destination: *const c_char) -> i32 {
+    let (Some(source), Some(destination)) = (unsafe { read_str(source) }, unsafe {
+        read_str(destination)
+    }) else {
+        set_last_error("zip_mod called without a source or destination");
+        return -1;
+    };
+    match zip_directory(Path::new(source), Path::new(destination)) {
+        Ok(()) => 0,
+        Err(e) => {
+            set_last_error(e);
             -1
         }
     }

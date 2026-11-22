@@ -16,6 +16,14 @@ pub enum Error {
     Image { path: PathBuf, reason: String },
     Io { path: PathBuf, source: io::Error },
     NotADirectory(PathBuf),
+    /// Invalid generator configuration
+    Config(String),
+    /// A download failed
+    Download { url: String, reason: String },
+    /// A zip couldn't be read or written
+    Archive { path: PathBuf, reason: String },
+    /// One or more items failed during generation
+    Failed(String),
     NoOutputDir,
 }
 
@@ -41,6 +49,10 @@ impl fmt::Display for Error {
             }
             Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
             Self::NotADirectory(p) => write!(f, "invalid directory: {}", p.display()),
+            Self::Config(m) => write!(f, "invalid configuration: {m}"),
+            Self::Download { url, reason } => write!(f, "failed to download {url}: {reason}"),
+            Self::Archive { path, reason } => write!(f, "{}: {reason}", path.display()),
+            Self::Failed(m) => f.write_str(m),
             Self::NoOutputDir => f.write_str("could not determine a BuilderIcons directory"),
         }
     }

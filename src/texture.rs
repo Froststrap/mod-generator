@@ -76,8 +76,13 @@ impl Fill {
             .map_or((first, last), |w| (w[0], w[1]));
 
         let span = right.0 - left.0;
-        let local = if span > 0.0 { ((t - left.0) / span).clamp(0.0, 1.0) } else { 0.0 };
-        let mix = |i: usize| (left.1[i] as f32 + (right.1[i] as f32 - left.1[i] as f32) * local) as u8;
+        let local = if span > 0.0 {
+            ((t - left.0) / span).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let mix =
+            |i: usize| (left.1[i] as f32 + (right.1[i] as f32 - left.1[i] as f32) * local) as u8;
         [mix(0), mix(1), mix(2)]
     }
 
@@ -90,7 +95,11 @@ impl Fill {
         let corners = [0.0, fw * cos, fh * sin, fw * cos + fh * sin];
         let min = corners.iter().copied().fold(f64::INFINITY, f64::min);
         let max = corners.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        let denom = if (max - min).abs() < 1e-6 { 1.0 } else { max - min };
+        let denom = if (max - min).abs() < 1e-6 {
+            1.0
+        } else {
+            max - min
+        };
 
         let w = w.min(img.width().saturating_sub(x0));
         let h = h.min(img.height().saturating_sub(y0));
@@ -123,15 +132,26 @@ pub struct Sprite {
 }
 
 fn load(path: &Path) -> Result<RgbaImage> {
-    Ok(image::open(path).map_err(|e| Error::image(path, e))?.to_rgba8())
+    Ok(image::open(path)
+        .map_err(|e| Error::image(path, e))?
+        .to_rgba8())
 }
 
 fn save(img: &RgbaImage, path: &Path) -> Result<()> {
     let tmp = path.with_extension("png.tmp");
     let file = fs::File::create(&tmp).at(&tmp)?;
-    PngEncoder::new_with_quality(BufWriter::new(file), CompressionType::Fast, PngFilter::Adaptive)
-        .write_image(img.as_raw(), img.width(), img.height(), image::ExtendedColorType::Rgba8)
-        .map_err(|e| Error::image(path, e))?;
+    PngEncoder::new_with_quality(
+        BufWriter::new(file),
+        CompressionType::Fast,
+        PngFilter::Adaptive,
+    )
+    .write_image(
+        img.as_raw(),
+        img.width(),
+        img.height(),
+        image::ExtendedColorType::Rgba8,
+    )
+    .map_err(|e| Error::image(path, e))?;
     fs::rename(&tmp, path).at(path)
 }
 
@@ -186,13 +206,25 @@ pub fn parse_image_set_data(lua_path: &Path) -> Result<Vec<(PathBuf, Vec<Sprite>
 
     for table in IMAGE_SET_TABLES {
         let header = format!("function make_{table}() {table} = {{");
-        let Some(start) = text.find(&header) else { continue };
-        let Some(open) = text[start..].find('{').map(|i| start + i) else { continue };
-        let Some(close) = matching_brace(&text, open) else { continue };
+        let Some(start) = text.find(&header) else {
+            continue;
+        };
+        let Some(open) = text[start..].find('{').map(|i| start + i) else {
+            continue;
+        };
+        let Some(close) = matching_brace(&text, open) else {
+            continue;
+        };
 
         for cap in ENTRY.captures_iter(&text[open + 1..close]) {
             let num = |i: usize| cap[i].parse::<u32>().unwrap_or(0);
-            let sprite = Sprite { name: cap[1].to_string(), x: num(2), y: num(3), w: num(4), h: num(5) };
+            let sprite = Sprite {
+                name: cap[1].to_string(),
+                x: num(2),
+                y: num(3),
+                w: num(4),
+                h: num(5),
+            };
             let set = cap[6].to_string();
             let slot = *index.entry(set.clone()).or_insert_with(|| {
                 sheets.push((sheets_dir.join(format!("{set}.png")), Vec::new()));
@@ -210,12 +242,16 @@ fn replace_sprite(sheet: &mut RgbaImage, sprite: &Sprite, custom: &Path) -> Resu
         return Ok(false);
     }
     let image = load(custom)?;
-    let scale = (sprite.w as f32 / image.width() as f32).min(sprite.h as f32 / image.height() as f32);
+    let scale =
+        (sprite.w as f32 / image.width() as f32).min(sprite.h as f32 / image.height() as f32);
     let sw = ((image.width() as f32 * scale).round() as u32).clamp(1, sprite.w);
     let sh = ((image.height() as f32 * scale).round() as u32).clamp(1, sprite.h);
     let resized = imageops::resize(&image, sw, sh, FilterType::Triangle);
 
-    let (ox, oy) = (sprite.x + (sprite.w - sw) / 2, sprite.y + (sprite.h - sh) / 2);
+    let (ox, oy) = (
+        sprite.x + (sprite.w - sw) / 2,
+        sprite.y + (sprite.h - sh) / 2,
+    );
     for (x, y, px) in resized.enumerate_pixels() {
         let (tx, ty) = (ox + x, oy + y);
         if px[3] > 0 && tx < sheet.width() && ty < sheet.height() {

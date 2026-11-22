@@ -240,20 +240,28 @@ pub fn recolor_font(path: &Path, opts: &RecolorOptions) -> Result<PathBuf> {
 
     let glyf_r = font.glyf().map_err(re)?;
     let loca_r = font.loca(None).map_err(re)?;
+    let original: Vec<Glyph> = (0..n)
+        .into_par_iter()
+        .map(|gid| {
+            Ok(match loca_r.get_glyf(GlyphId::from(gid), &glyf_r).map_err(re)? {
+                Some(g) => g.to_owned_obj(glyf_r.offset_data()),
+                None => Glyph::Empty,
+            })
+        })
+        .collect::<Result<_>>()?;
+    let banded: Vec<Glyph> = new_glyphs
+        .par_iter()
+        .map(|(_, _, contours)| simple_glyph(contours).map(Glyph::Simple).map_err(|e| Error::font(path, e)))
+        .collect::<Result<_>>()?;
+
     let mut builder = GlyfLocaBuilder::new();
-    for gid in 0..n {
-        let g: Glyph = match loca_r.get_glyf(GlyphId::from(gid), &glyf_r).map_err(re)? {
-            Some(g) => g.to_owned_obj(glyf_r.offset_data()),
-            None => Glyph::Empty,
-        };
-        builder.add_glyph(&g).map_err(|e| Error::font(path, e))?;
+    for g in original.iter().chain(&banded) {
+        builder.add_glyph(g).map_err(|e| Error::font(path, e))?;
     }
     let (mut max_points, mut max_contours) = (0usize, 0usize);
     for (_, _, contours) in &new_glyphs {
         max_points = max_points.max(contours.iter().map(Vec::len).sum());
         max_contours = max_contours.max(contours.len());
-        let sg = simple_glyph(contours).map_err(|e| Error::font(path, e))?;
-        builder.add_glyph(&Glyph::Simple(sg)).map_err(|e| Error::font(path, e))?;
     }
     let (glyf_w, loca_w, loca_format) = builder.build();
 

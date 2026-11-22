@@ -7,6 +7,7 @@ pub mod color;
 pub mod data_types;
 pub mod error;
 pub mod font;
+pub mod generate;
 pub mod geometry;
 pub mod image_layers;
 pub mod process;
