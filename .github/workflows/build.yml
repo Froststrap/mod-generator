@@ -1,25 +1,18 @@
-name: Build mod-generator
+name: Build
 
 on:
   push:
-    branches: ["main"]
-    tags: ["v*"]
   pull_request:
 
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: windows-latest
-            output-name: mod-generator.exe
-            pyinstaller-args: --onefile src/main.py --name mod-generator
           - os: ubuntu-latest
-            output-name: mod-generator-linux
-            pyinstaller-args: --onefile src/main.py --name mod-generator-linux
           - os: macos-latest
-            output-name: mod-generator-macos
-            pyinstaller-args: --onefile src/main.py --name mod-generator-macos
 
     runs-on: ${{ matrix.os }}
 
@@ -27,59 +20,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - name: Install Rust toolchain
+        uses: moonrepo/setup-rust@v1
+
+      - name: Build CLI
+        run: cargo b -r --timings
+
+      - name: Build library (C ABI)
+        run: cargo b -r --lib --no-default-features --features ffi
+
+      - name: Upload build timings
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          python-version: "3.12"
-
-      - name: setup uv
-        uses: astral-sh/setup-uv@v8.2.0
-
-      - name: Install dependencies
-        run: uv sync
-
-      - name: Build with PyInstaller
-        run: uv run pyinstaller ${{ matrix.pyinstaller-args }}
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.output-name }}
-          path: dist/${{ matrix.output-name }}
-
-  release:
-    needs: [build]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
-    steps:
-      - name: Download Windows artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: mod-generator.exe
-          path: release
-
-      - name: Download Linux artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: mod-generator-linux
-          path: release
-
-      - name: Download macOS artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: mod-generator-macos
-          path: release
-
-      - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          draft: true
-          files: |
-            release/mod-generator.exe
-            release/mod-generator-linux
-            release/mod-generator-macos
-          name: Mod Generator ${{ github.ref_name }}
-          fail_on_unmatched_files: true
+          name: cargo-timings-${{ matrix.os }}
+          path: target/cargo-timings/
+          if-no-files-found: warn

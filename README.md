@@ -12,7 +12,7 @@ The mod generator builds a complete colour mod: it downloads the current Roblox 
 
 To get the most seamless experience, it is recommended to use [Froststrap](https://github.com/Froststrap/Froststrap) for zero hassle and extra options such as previewing. Froststrap links this crate directly as a library.
 
-You can also use it standalone by downloading the [release](https://github.com/Froststrap/mod-generator/releases/latest) and running it in a terminal.
+You can also use it standalone by [building it from source](#building-from-source) and running it in a terminal. Prebuilt releases are paused for now; the existing releases are the old Python version, which older Froststrap builds still depend on.
 
 #### `generate`: build a complete mod
  - `--color`: a hex colour (`FF0000`), a list of hex colours spread evenly as a gradient (`FF0000,0000FF`), or explicit stops (`0:FF0000,0.5:00FF00,1:0000FF`).
