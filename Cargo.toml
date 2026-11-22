@@ -3,21 +3,39 @@ name = "mod-generator"
 version = "3.0.0"
 edition = "2024"
 
+[lib]
+name = "mod_generator"
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "mod-generator"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[features]
+default = ["cli"]
+cli = ["dep:clap"]
+ffi = []
+
 [dependencies]
 clipper2-rust = "1.2"
 imagequant = "4"
 walkdir = "2"
 kurbo = "0.11"
+log = "0.4"
 rayon = "1"
-skrifa = "*"
-read-fonts = "*"
-write-fonts = "*"
+regex = "1"
+skrifa = "0.33.2"
+read-fonts = "0.31.3"
+write-fonts = "0.39.1"
 
 [dependencies.clap]
 version = "4.6"
 features = ["derive"]
+optional = true
 
 [dependencies.image]
 version = "0.25"
 default-features = false
-features = ["png"]
+features = ["png", "jpeg", "gif", "bmp", "webp"]

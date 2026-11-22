@@ -153,6 +153,13 @@ fn simple_glyph(contours: &[IntContour]) -> std::result::Result<SimpleGlyph, Str
     SimpleGlyph::from_bezpath(&path).map_err(|e| format!("{e:?}"))
 }
 
+pub fn parse_image_pair(s: &str) -> Result<(String, PathBuf)> {
+    let (glyph, path) = s
+        .split_once(':')
+        .ok_or_else(|| Error::ImageMap(format!("'{s}' (missing colon)")))?;
+    Ok((glyph.trim().to_string(), PathBuf::from(path.trim())))
+}
+
 pub fn recolor_font(path: &Path, opts: &RecolorOptions) -> Result<PathBuf> {
     let data = fs::read(path).at(path)?;
     let font = FontRef::new(&data).map_err(|e| Error::font(path, e))?;
@@ -175,7 +182,7 @@ pub fn recolor_font(path: &Path, opts: &RecolorOptions) -> Result<PathBuf> {
         })
         .collect();
 
-    println!(
+    log::info!(
         "{}: processing {} glyphs with {n_bands} bands each...",
         path.display(),
         jobs.len()
@@ -326,7 +333,7 @@ pub fn recolor_font(path: &Path, opts: &RecolorOptions) -> Result<PathBuf> {
 
     let dest = path.with_extension("otf");
     fs::write(&dest, out.build()).at(&dest)?;
-    println!(
+    log::info!(
         "Processed (gradient, {} stops, angle={}, bands={n_bands}): {}",
         opts.gradient.0.len(),
         opts.angle.rem_euclid(360),

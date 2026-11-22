@@ -12,6 +12,8 @@ pub enum Error {
     ImageMap(String),
     /// Font couldn't be parsed or rebuilt
     Font { path: PathBuf, reason: String },
+    /// Image couldn't be decoded or written
+    Image { path: PathBuf, reason: String },
     Io { path: PathBuf, source: io::Error },
     NotADirectory(PathBuf),
     NoOutputDir,
@@ -23,6 +25,10 @@ impl Error {
     pub fn font(path: impl Into<PathBuf>, reason: impl fmt::Display) -> Self {
         Self::Font { path: path.into(), reason: reason.to_string() }
     }
+
+    pub fn image(path: impl Into<PathBuf>, reason: impl fmt::Display) -> Self {
+        Self::Image { path: path.into(), reason: reason.to_string() }
+    }
 }
 
 impl fmt::Display for Error {
@@ -30,7 +36,9 @@ impl fmt::Display for Error {
         match self {
             Self::Color(m) => write!(f, "invalid color specification: {m}"),
             Self::ImageMap(m) => write!(f, "invalid image-map entry: {m}"),
-            Self::Font { path, reason } => write!(f, "{}: {reason}", path.display()),
+            Self::Font { path, reason } | Self::Image { path, reason } => {
+                write!(f, "{}: {reason}", path.display())
+            }
             Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
             Self::NotADirectory(p) => write!(f, "invalid directory: {}", p.display()),
             Self::NoOutputDir => f.write_str("could not determine a BuilderIcons directory"),

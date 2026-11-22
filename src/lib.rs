@@ -10,3 +10,7 @@ pub mod font;
 pub mod geometry;
 pub mod image_layers;
 pub mod process;
+pub mod texture;
+
+#[cfg(feature = "ffi")]
+mod ffi;

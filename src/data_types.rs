@@ -36,7 +36,8 @@ const BUILDER_ICONS_JSON: &str = r#"{
     ]
 }"#;
 
-#[derive(Clone, Debug, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum Bootstrapper {
     Bloxstrap,
     Fishstrap,

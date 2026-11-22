@@ -19,12 +19,7 @@ pub struct Summary {
     pub failed: usize,
 }
 
-pub fn process_directory(
-    dir: &Path,
-    opts: &RecolorOptions,
-    bootstrapper: Bootstrapper,
-    mod_name: Option<&str>,
-) -> Result<Summary> {
+pub fn recolor_directory(dir: &Path, opts: &RecolorOptions) -> Result<Vec<Result<PathBuf>>> {
     if !dir.is_dir() {
         return Err(Error::NotADirectory(dir.to_path_buf()));
     }
@@ -37,12 +32,20 @@ pub fn process_directory(
         .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("ttf")))
         .collect();
 
-    let results: Vec<Result<PathBuf>> =
-        fonts.par_iter().map(|p| recolor_font(p, opts)).collect();
+    Ok(fonts.par_iter().map(|p| recolor_font(p, opts)).collect())
+}
+
+pub fn process_directory(
+    dir: &Path,
+    opts: &RecolorOptions,
+    bootstrapper: Bootstrapper,
+    mod_name: Option<&str>,
+) -> Result<Summary> {
+    let results = recolor_directory(dir, opts)?;
 
     let font_dir = FontDir::get(bootstrapper, mod_name);
     if font_dir.is_none() {
-        eprintln!("warning: no install location for {bootstrapper} on this platform; fonts left in place");
+        log::warn!("no install location for {bootstrapper} on this platform; fonts left in place");
     }
 
     let mut failed = 0;
@@ -59,10 +62,10 @@ pub fn process_directory(
             )),
         };
         if let (Err(original), _) = (r, &outcome) {
-            eprintln!("error: {original}");
+            log::error!("{original}");
             failed += 1;
         } else if let Err(e) = outcome {
-            eprintln!("error: {e}");
+            log::error!("{e}");
             failed += 1;
         }
     }
@@ -73,11 +76,10 @@ pub fn process_directory(
     };
     if let Some(root) = root {
         if let Err(e) = write_builder_icons_json(&root) {
-            eprintln!("error: {e}");
+            log::error!("{e}");
             failed += 1;
         }
     }
 
-    println!("Processed {} files ({failed} failed)", results.len());
     Ok(Summary { processed: results.len(), failed })
 }

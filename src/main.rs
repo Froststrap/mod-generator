@@ -8,17 +8,32 @@ use clap::Parser;
 use mod_generator::{
     color::Gradient,
     data_types::Bootstrapper,
-    error::{Error, Result},
-    font::RecolorOptions,
+    error::Result,
+    font::{RecolorOptions, parse_image_pair},
     process::process_directory,
 };
 
-fn parse_image_pair(s: &str) -> Result<(String, PathBuf), Error> {
-    let (glyph, path) = s
-        .split_once(':')
-        .ok_or_else(|| Error::ImageMap(format!("'{s}' (missing colon)")))?;
-    Ok((glyph.trim().to_string(), PathBuf::from(path.trim())))
+struct ConsoleLogger;
+
+impl log::Log for ConsoleLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+
+    fn log(&self, record: &log::Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        match record.level() {
+            log::Level::Info => println!("{}", record.args()),
+            level => eprintln!("{}: {}", level.as_str().to_lowercase(), record.args()),
+        }
+    }
+
+    fn flush(&self) {}
 }
+
+static LOGGER: ConsoleLogger = ConsoleLogger;
 
 #[derive(Parser, Debug)]
 #[command(name = "mod_generator")]
@@ -48,6 +63,9 @@ struct AppArgs {
 }
 
 fn run() -> Result<bool> {
+    let _ = log::set_logger(&LOGGER);
+    log::set_max_level(log::LevelFilter::Info);
+
     let args = AppArgs::parse();
 
     if !args.image_map.is_empty() {
@@ -69,6 +87,7 @@ fn run() -> Result<bool> {
     };
 
     let summary = process_directory(&args.path, &opts, args.bootstrapper, args.mod_name.as_deref())?;
+    println!("Processed {} files ({} failed)", summary.processed, summary.failed);
     Ok(summary.failed == 0)
 }
 
