@@ -15,7 +15,7 @@ use crate::{
     color::Gradient,
     error::Result,
     font::{RecolorOptions, parse_image_pair},
-    generate::{GenerateConfig, Stage, generate, zip_directory},
+    generate::{GenerateConfig, Progress, generate, zip_directory},
     process::recolor_directory,
     texture::{
         Fill, recolor_images as recolor_image_list, recolor_sprite_sheets as recolor_sheets,
@@ -255,7 +255,7 @@ pub extern "C" fn last_error() -> *const c_char {
 }
 
 /// Stages are 1 = downloading, 2 = extracting, 3 = recoloring, 4 = finishing.
-pub type ProgressCallback = extern "C" fn(stage: c_int);
+pub type ProgressCallback = extern "C" fn(stage: c_int, done: u64, total: u64);
 
 /// Generates a complete mod from a JSON `GenerateConfig`.
 /// Returns 0 on success, or -1 with the reason available from `last_error`.
@@ -276,9 +276,9 @@ pub unsafe extern "C" fn generate_mod(
         }
     };
 
-    let report = |stage: Stage| {
+    let report = |p: Progress| {
         if let Some(callback) = progress {
-            callback(stage as c_int);
+            callback(p.stage as c_int, p.done, p.total);
         }
     };
 

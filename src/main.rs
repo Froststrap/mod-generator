@@ -5,6 +5,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fs,
+    io::{self, IsTerminal, Write},
     path::PathBuf,
     process::ExitCode,
 };
@@ -15,7 +16,7 @@ use mod_generator::{
     data_types::Bootstrapper,
     error::{Error, IoContext, Result},
     font::{RecolorOptions, parse_image_pair},
-    generate::{DEFAULT_DOMAIN, GenerateConfig, Stage, default_cache_dir, generate, zip_directory},
+    generate::{DEFAULT_DOMAIN, GenerateConfig, Progress, Stage, default_cache_dir, generate, zip_directory},
     process::process_directory,
 };
 
@@ -31,6 +32,9 @@ impl log::Log for ConsoleLogger {
             return;
         }
         match record.level() {
+            log::Level::Info if io::stdout().is_terminal() => {
+                println!("\r\x1b[2K{}", record.args())
+            }
             log::Level::Info => println!("{}", record.args()),
             level => eprintln!("{}: {}", level.as_str().to_lowercase(), record.args()),
         }
@@ -154,15 +158,38 @@ fn run_generate(args: GenerateArgs) -> Result<bool> {
         generator_version: None,
     };
 
-    let generated = generate(&config, &|stage| {
-        let name = match stage {
+    let current = std::sync::Mutex::new(None);
+    let generated = generate(&config, &|p: Progress| {
+        let name = match p.stage {
             Stage::Downloading => "Downloading Roblox assets",
             Stage::Extracting => "Extracting",
             Stage::Recoloring => "Recoloring",
             Stage::Finishing => "Writing manifests",
         };
-        println!("{name}...");
+        let mut current = current.lock().unwrap_or_else(|e| e.into_inner());
+        let changed = *current != Some(p.stage);
+        *current = Some(p.stage);
+        if !io::stdout().is_terminal() {
+            if changed {
+                println!("{name}...");
+            }
+            return;
+        }
+        let detail = match (p.stage, p.total) {
+            (_, 0) => String::new(),
+            (Stage::Downloading, total) => format!(
+                " {:.1}/{:.1} MB",
+                p.done as f64 / 1_048_576.0,
+                total as f64 / 1_048_576.0
+            ),
+            (_, total) => format!(" {}/{total}", p.done),
+        };
+        print!("\r\x1b[2K{name}...{detail}");
+        let _ = io::stdout().flush();
     })?;
+    if io::stdout().is_terminal() {
+        println!();
+    }
     println!("Generated mod for Roblox {} in {}", generated.roblox_version, config.output.display());
 
     if let Some(zip) = &args.zip {

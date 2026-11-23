@@ -8,8 +8,12 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     env, fs,
     hash::Hasher,
-    io::{self, Read},
+    io::{self, Read, Write},
     path::{Component, Path, PathBuf},
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -23,9 +27,8 @@ use crate::{
     color::Gradient,
     data_types::write_builder_icons_json,
     error::{Error, IoContext, Result},
-    font::RecolorOptions,
-    process::recolor_directory,
-    texture::{Fill, recolor_images, recolor_sprite_sheets},
+    font::{RecolorOptions, recolor_font},
+    texture::{Fill, Sprite, parse_image_set_data, recolor_image, recolor_sheet},
 };
 
 pub const DEFAULT_DOMAIN: &str = "roblox.com";
@@ -77,6 +80,54 @@ pub enum Stage {
     Extracting = 2,
     Recoloring = 3,
     Finishing = 4,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Progress {
+    pub stage: Stage,
+    pub done: u64,
+    pub total: u64,
+}
+
+struct Tracker<'a> {
+    report: &'a (dyn Fn(Progress) + Sync),
+    stage: Stage,
+    total: u64,
+    done: AtomicU64,
+    last: Mutex<Option<u64>>,
+}
+
+impl<'a> Tracker<'a> {
+    fn start(report: &'a (dyn Fn(Progress) + Sync), stage: Stage, total: u64) -> Self {
+        let tracker = Self {
+            report,
+            stage,
+            total,
+            done: AtomicU64::new(0),
+            last: Mutex::new(None),
+        };
+        tracker.advance(0);
+        tracker
+    }
+
+    fn advance(&self, amount: u64) {
+        let done = self.done.fetch_add(amount, Ordering::Relaxed) + amount;
+        let done = if self.total > 0 { done.min(self.total) } else { done };
+        let step = match self.total {
+            0 => done >> 16,
+            total => done * 1000 / total,
+        };
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        if last.is_some_and(|last| step <= last) {
+            return;
+        }
+        *last = Some(step);
+        (self.report)(Progress {
+            stage: self.stage,
+            done,
+            total: self.total,
+        });
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -190,31 +241,75 @@ fn client_version(agent: &ureq::Agent, domain: &str) -> Result<ClientVersion> {
     serde_json::from_str(&body).map_err(|e| fail(e.to_string()))
 }
 
-fn download_package(
-    agent: &ureq::Agent,
-    cache_dir: &Path,
-    hash: &str,
-    kind: &str,
-) -> Result<PathBuf> {
+enum Package {
+    Cached(PathBuf),
+    Fetch {
+        path: PathBuf,
+        url: String,
+        response: ureq::http::Response<ureq::Body>,
+    },
+}
+
+impl Package {
+    fn size(&self) -> u64 {
+        match self {
+            Package::Cached(path) => fs::metadata(path).map_or(0, |m| m.len()),
+            Package::Fetch { response, .. } => response.body().content_length().unwrap_or(0),
+        }
+    }
+}
+
+fn open_package(agent: &ureq::Agent, cache_dir: &Path, hash: &str, kind: &str) -> Result<Package> {
     let path = cache_dir.join(format!("{kind}-{hash}.zip"));
     if fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
-        return Ok(path);
+        return Ok(Package::Cached(path));
     }
 
     let url = format!("{PACKAGE_CDN}/version-{hash}-{kind}.zip");
+    let response = agent.get(&url).call().map_err(|e| Error::Download {
+        url: url.clone(),
+        reason: e.to_string(),
+    })?;
+    Ok(Package::Fetch {
+        path,
+        url,
+        response,
+    })
+}
+
+fn download_package(package: Package, tracker: &Tracker) -> Result<PathBuf> {
+    let (path, url, response) = match package {
+        Package::Cached(path) => {
+            tracker.advance(fs::metadata(&path).map_or(0, |m| m.len()));
+            return Ok(path);
+        }
+        Package::Fetch {
+            path,
+            url,
+            response,
+        } => (path, url, response),
+    };
     let fail = |reason: String| Error::Download {
         url: url.clone(),
         reason,
     };
-    let mut response = agent.get(&url).call().map_err(|e| fail(e.to_string()))?;
 
     let part = path.with_extension("zip.part");
     let mut file = fs::File::create(&part).at(&part)?;
-    io::copy(&mut response.body_mut().as_reader(), &mut file).map_err(|e| fail(e.to_string()))?;
+    let mut reader = response.into_body().into_reader();
+    let mut buf = vec![0; 64 * 1024];
+    loop {
+        let n = reader.read(&mut buf).map_err(|e| fail(e.to_string()))?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n]).at(&part)?;
+        tracker.advance(n as u64);
+    }
     drop(file);
     fs::rename(&part, &path).at(&path)?;
 
-    log::info!("Downloaded {kind}");
+    log::info!("Downloaded {}", path.display());
     Ok(path)
 }
 
@@ -275,16 +370,32 @@ fn wanted_files(cfg: &GenerateConfig, mappings: &Mappings) -> Result<(Wanted, Ve
     Ok((Wanted { files, prefixes }, images))
 }
 
-fn extract_package(zip_path: &Path, prefix: &str, output: &Path, wanted: &Wanted) -> Result<usize> {
+type Archive = ZipArchive<io::BufReader<fs::File>>;
+
+fn open_archive(zip_path: &Path) -> Result<Archive> {
+    let file = fs::File::open(zip_path).at(zip_path)?;
+    ZipArchive::new(io::BufReader::new(file)).map_err(|e| Error::Archive {
+        path: zip_path.to_path_buf(),
+        reason: e.to_string(),
+    })
+}
+
+fn extract_package(
+    zip_path: &Path,
+    mut archive: Archive,
+    prefix: &str,
+    output: &Path,
+    wanted: &Wanted,
+    tracker: &Tracker,
+) -> Result<usize> {
     let archive_err = |e: zip::result::ZipError| Error::Archive {
         path: zip_path.to_path_buf(),
         reason: e.to_string(),
     };
-    let file = fs::File::open(zip_path).at(zip_path)?;
-    let mut archive = ZipArchive::new(io::BufReader::new(file)).map_err(archive_err)?;
 
     let mut extracted = 0;
     for i in 0..archive.len() {
+        tracker.advance(1);
         let mut entry = archive.by_index(i).map_err(archive_err)?;
         let name = entry.name().map_err(archive_err)?.replace('\\', "/");
         let name = name.trim_start_matches('/');
@@ -335,26 +446,39 @@ fn first_failure<T>(results: Vec<Result<T>>, what: &str) -> Result<()> {
     }
 }
 
-fn recolor_textures(cfg: &GenerateConfig, fill: &Fill, images: &[String]) -> Result<()> {
-    let paths: Vec<PathBuf> = images
-        .iter()
-        .map(|rel| join_rel(&cfg.output, rel))
-        .filter(|p| p.is_file())
+fn recolor_textures(
+    cfg: &GenerateConfig,
+    fill: &Fill,
+    images: &[PathBuf],
+    sheets: &[(PathBuf, Vec<Sprite>)],
+    tracker: &Tracker,
+) -> Result<()> {
+    let results: Vec<Result<()>> = images
+        .par_iter()
+        .map(|path| {
+            let result = recolor_image(path, fill);
+            tracker.advance(1);
+            result
+        })
         .collect();
-    first_failure(recolor_images(&paths, fill), "images")?;
-    log::info!("Recolored {} images", paths.len());
+    first_failure(results, "images")?;
+    log::info!("Recolored {} images", images.len());
 
-    let lua = join_rel(&cfg.output, IMAGE_SET_DATA);
-    if lua.is_file() {
-        let results = recolor_sprite_sheets(
-            &lua,
-            fill,
-            cfg.custom_logo.as_deref(),
-            cfg.custom_spinner.as_deref(),
-        )?;
-        first_failure(results, "sprite sheets")?;
-    }
-    Ok(())
+    log::info!(
+        "Found {} sprites across {} sheets",
+        sheets.iter().map(|(_, s)| s.len()).sum::<usize>(),
+        sheets.len()
+    );
+    let (logo, spinner) = (cfg.custom_logo.as_deref(), cfg.custom_spinner.as_deref());
+    let results: Vec<Result<bool>> = sheets
+        .par_iter()
+        .map(|(path, sprites)| {
+            let result = recolor_sheet(path, sprites, fill, logo, spinner);
+            tracker.advance(1);
+            result
+        })
+        .collect();
+    first_failure(results, "sprite sheets")
 }
 
 /// FNV-1a, so cache keys stay stable across Rust versions.
@@ -400,6 +524,16 @@ fn font_cache_key(hash: &str, opts: &RecolorOptions) -> String {
     format!("{hash}-{:016x}", h.finish())
 }
 
+fn ttf_files(dir: &Path) -> Vec<PathBuf> {
+    WalkDir::new(dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .map(|e| e.into_path())
+        .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("ttf")))
+        .collect()
+}
+
 fn otf_files(dir: &Path) -> Vec<PathBuf> {
     fs::read_dir(dir)
         .map(|entries| {
@@ -431,9 +565,15 @@ fn prune_font_cache(fonts_cache: &Path, hash: &str) {
     }
 }
 
-fn recolor_fonts(cfg: &GenerateConfig, opts: &RecolorOptions, hash: &str) -> Result<()> {
-    let font_dir = join_rel(&cfg.output, FONT_DIR);
-    if !font_dir.is_dir() {
+fn recolor_fonts(
+    cfg: &GenerateConfig,
+    opts: &RecolorOptions,
+    hash: &str,
+    font_dir: &Path,
+    sources: &[PathBuf],
+    tracker: &Tracker,
+) -> Result<()> {
+    if sources.is_empty() {
         return Ok(());
     }
 
@@ -445,11 +585,19 @@ fn recolor_fonts(cfg: &GenerateConfig, opts: &RecolorOptions, hash: &str) -> Res
             let dest = font_dir.join(font.file_name().unwrap_or_default());
             fs::copy(font, &dest).at(&dest)?;
         }
+        tracker.advance(sources.len() as u64);
         log::info!("Reused {} cached fonts", cached_fonts.len());
         return Ok(());
     }
 
-    let results = recolor_directory(&font_dir, opts)?;
+    let results: Vec<Result<PathBuf>> = sources
+        .par_iter()
+        .map(|path| {
+            let result = recolor_font(path, opts);
+            tracker.advance(1);
+            result
+        })
+        .collect();
     let fonts: Vec<PathBuf> = results
         .iter()
         .filter_map(|r| r.as_ref().ok().cloned())
@@ -515,7 +663,7 @@ fn finish(
 }
 
 /// Generates a complete mod into `cfg.output`.
-pub fn generate(cfg: &GenerateConfig, progress: &(dyn Fn(Stage) + Sync)) -> Result<Generated> {
+pub fn generate(cfg: &GenerateConfig, progress: &(dyn Fn(Progress) + Sync)) -> Result<Generated> {
     let gradient: Gradient = cfg.color.parse()?;
     let fill = Fill::new(&gradient, cfg.angle);
     let font_opts = RecolorOptions {
@@ -533,7 +681,11 @@ pub fn generate(cfg: &GenerateConfig, progress: &(dyn Fn(Stage) + Sync)) -> Resu
     };
     let (wanted, images) = wanted_files(cfg, &mappings)?;
 
-    progress(Stage::Downloading);
+    progress(Progress {
+        stage: Stage::Downloading,
+        done: 0,
+        total: 0,
+    });
     fs::create_dir_all(&cfg.cache_dir).at(&cfg.cache_dir)?;
     let agent = agent();
     let version = client_version(&agent, &cfg.domain)?;
@@ -547,33 +699,71 @@ pub fn generate(cfg: &GenerateConfig, progress: &(dyn Fn(Stage) + Sync)) -> Resu
             version.client_version_upload
         )));
     }
-    let zips: Vec<PathBuf> = PACKAGES
+    let packages: Vec<Package> = PACKAGES
         .par_iter()
-        .map(|(kind, _)| download_package(&agent, &cfg.cache_dir, &hash, kind))
+        .map(|(kind, _)| open_package(&agent, &cfg.cache_dir, &hash, kind))
+        .collect::<Result<_>>()?;
+    let tracker = Tracker::start(
+        progress,
+        Stage::Downloading,
+        packages.iter().map(Package::size).sum(),
+    );
+    let zips: Vec<PathBuf> = packages
+        .into_par_iter()
+        .map(|package| download_package(package, &tracker))
         .collect::<Result<_>>()?;
     prune_packages(&cfg.cache_dir, &hash);
 
-    progress(Stage::Extracting);
     clear_output(&cfg.output)?;
-    let extracted: usize = zips
-        .par_iter()
+    let archives: Vec<Archive> = zips
+        .iter()
+        .map(|zip| open_archive(zip))
+        .collect::<Result<_>>()?;
+    let tracker = Tracker::start(
+        progress,
+        Stage::Extracting,
+        archives.iter().map(|a| a.len() as u64).sum(),
+    );
+    let extracted: usize = archives
+        .into_par_iter()
+        .zip(zips.par_iter())
         .zip(PACKAGES.par_iter())
-        .map(|(zip, (_, prefix))| extract_package(zip, prefix, &cfg.output, &wanted))
+        .map(|((archive, zip), (_, prefix))| {
+            extract_package(zip, archive, prefix, &cfg.output, &wanted, &tracker)
+        })
         .collect::<Result<Vec<_>>>()?
         .into_iter()
         .sum();
     log::info!("Extracted {extracted} files for Roblox {}", version.version);
 
-    progress(Stage::Recoloring);
+    let image_paths: Vec<PathBuf> = images
+        .iter()
+        .map(|rel| join_rel(&cfg.output, rel))
+        .filter(|p| p.is_file())
+        .collect();
+    let lua = join_rel(&cfg.output, IMAGE_SET_DATA);
+    let sheets = if lua.is_file() {
+        parse_image_set_data(&lua)?
+    } else {
+        Vec::new()
+    };
+    let font_dir = join_rel(&cfg.output, FONT_DIR);
+    let font_files = ttf_files(&font_dir);
+    let tracker = Tracker::start(
+        progress,
+        Stage::Recoloring,
+        (image_paths.len() + sheets.len() + font_files.len()) as u64,
+    );
     let (textures, fonts) = rayon::join(
-        || recolor_textures(cfg, &fill, &images),
-        || recolor_fonts(cfg, &font_opts, &hash),
+        || recolor_textures(cfg, &fill, &image_paths, &sheets, &tracker),
+        || recolor_fonts(cfg, &font_opts, &hash, &font_dir, &font_files, &tracker),
     );
     textures?;
     fonts?;
 
-    progress(Stage::Finishing);
+    let tracker = Tracker::start(progress, Stage::Finishing, 1);
     finish(cfg, &gradient, &version, &hash)?;
+    tracker.advance(1);
 
     Ok(Generated {
         roblox_version: version.version,

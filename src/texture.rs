@@ -261,7 +261,7 @@ fn replace_sprite(sheet: &mut RgbaImage, sprite: &Sprite, custom: &Path) -> Resu
     Ok(true)
 }
 
-fn recolor_sheet(
+pub fn recolor_sheet(
     path: &Path,
     sprites: &[Sprite],
     fill: &Fill,
